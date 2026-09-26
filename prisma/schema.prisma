@@ -1,0 +1,141 @@
+// Prisma schema for Debrief — Event-to-Pipeline Slack bot.
+//
+// Design principle (validated against the live graph8 API): graph8 is the brain
+// and system of record. It owns the *outcome definition* — the target profile
+// (Persona/ICP), the extraction/drafting LLM skills, the pipeline, and the
+// hot-lead workflow. Debrief stores only what graph8 cannot know: the Slack
+// channel<->event binding, dedupe keys, live per-thread conversation state, the
+// operator map, and *pointers* (graph8 object ids) into graph8.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// An event bound to one Slack channel. Holds pointers to the graph8 objects
+/// that define this event's outcome and steps — not the outcome definition
+/// itself, which lives in graph8.
+model Event {
+  id             String    @id @default(cuid())
+  name           String
+  date           DateTime?
+  goal           String? // human one-liner, e.g. "Find the best SWE lead for graph8"
+  slackChannelId String    @unique
+
+  // Cached copy of the target-profile text fed to the extract skill as
+  // {target_profile}. Mirrors the graph8 Persona/ICP so captures don't need a
+  // round-trip; graph8 remains the source of truth.
+  targetProfile String?
+
+  // --- graph8 pointers (the outcome + steps live in graph8) ---
+  graph8PersonaId      String? // Persona / ICP: the target profile
+  graph8ExtractSkillId String? // LLM skill: transcript -> structured lead + disposition
+  graph8DraftSkillId   String? // LLM skill: draft the follow-up
+  graph8PipelineId     String? // deal pipeline (stages)
+  graph8ListId         String? // audience list for this event
+  graph8SequenceId     String? // warm nurture campaign/sequence
+  graph8HotWorkflowId  String? // hot-lead workflow (alerts, delay, voice call)
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  captures Capture[]
+}
+
+/// One captured conversation = one Slack thread. graph8 holds the CRM truth;
+/// this row is the local audit + dedupe + orchestration record.
+model Capture {
+  id             String @id @default(cuid())
+  eventId        String
+  event          Event  @relation(fields: [eventId], references: [id])
+  slackChannelId String
+  slackThreadTs  String // root message ts = thread id
+  slackUserId    String // operator who captured
+  slackEventId   String @unique // Slack event_id, for dedupe on retries
+
+  inputType  InputType
+  rawText    String? // transcript or text
+  extraction Json? // structured output from the graph8 extract skill
+
+  status CaptureStatus @default(RECEIVED)
+
+  // Disposition is a free-text label RETURNED BY graph8 (e.g. STRONG_FIT /
+  // MAYBE / PASS, or HOT / WARM / COLD) — its meaning and routing are owned by
+  // the graph8 skill + workflow, so this is intentionally not a local enum.
+  disposition String?
+  fitScore    Int? // 0-100 fit score from the extract skill, when provided
+
+  // graph8 references
+  graph8ContactId   String?
+  graph8CompanyId   String?
+  graph8ExecutionId String? // skill/workflow execution id, for async polling
+  outcomeRefs       Json? // ids created by the actions: {dealId, taskId, bookingId, ...}
+
+  // Generic outreach (email is one channel; LinkedIn/SMS/etc. also fit)
+  outreachChannel String? // e.g. "email", "linkedin"
+  outreachSubject String?
+  outreachBody    String?
+  outreachSentAt  DateTime?
+
+  error     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  threadState ThreadState?
+
+  @@unique([slackChannelId, slackThreadTs])
+}
+
+/// Live conversation state for a capture's Slack thread (disambiguation,
+/// missing-info, approval). Pure Slack UX state — graph8 has no notion of it.
+model ThreadState {
+  id        String    @id @default(cuid())
+  captureId String    @unique
+  capture   Capture   @relation(fields: [captureId], references: [id])
+  state     ConvState @default(IDLE)
+  payload   Json? // e.g. disambiguation candidates
+  updatedAt DateTime  @updatedAt
+}
+
+/// Maps a Slack operator (and their Clerk web identity) to a graph8 owner used
+/// for contacts/deals/tasks.
+model OperatorMap {
+  slackUserId  String  @id
+  clerkUserId  String? @unique // web dashboard identity (Clerk)
+  graph8UserId String? // owner for contacts/deals/tasks
+  displayName  String?
+  signature    String? // email sign-off
+}
+
+enum InputType {
+  VOICE
+  TEXT
+  IMAGE
+  LINK
+}
+
+/// Pipeline stage of a capture within Debrief (not a business disposition —
+/// that is `Capture.disposition`, owned by graph8).
+enum CaptureStatus {
+  RECEIVED
+  EXTRACTED
+  AWAITING_INFO
+  AWAITING_DISAMBIGUATION
+  RECORDED
+  AWAITING_APPROVAL
+  COMPLETED
+  FAILED
+}
+
+enum ConvState {
+  IDLE
+  AWAITING_INFO
+  AWAITING_DISAMBIGUATION
+  AWAITING_APPROVAL
+  AWAITING_EDIT
+}

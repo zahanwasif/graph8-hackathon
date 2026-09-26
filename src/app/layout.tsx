@@ -1,4 +1,6 @@
+import { ClerkProvider, Show, UserButton } from "@clerk/nextjs";
 import type { Metadata } from "next";
+import Link from "next/link";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -23,7 +25,33 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        <ClerkProvider>
+          <header className="flex items-center justify-between gap-4 border-b border-black/10 px-6 py-3 dark:border-white/10">
+            <span className="text-sm font-semibold tracking-tight">Debrief</span>
+            <nav className="flex items-center gap-3">
+              <Show when="signed-out">
+                <Link
+                  href="/sign-in"
+                  className="rounded-md px-3 py-1.5 text-sm font-medium hover:bg-black/5 dark:hover:bg-white/10"
+                >
+                  Sign in
+                </Link>
+                <Link
+                  href="/sign-up"
+                  className="rounded-md bg-foreground px-3 py-1.5 text-sm font-medium text-background hover:opacity-90"
+                >
+                  Sign up
+                </Link>
+              </Show>
+              <Show when="signed-in">
+                <UserButton />
+              </Show>
+            </nav>
+          </header>
+          <main className="flex-1">{children}</main>
+        </ClerkProvider>
+      </body>
     </html>
   );
 }
