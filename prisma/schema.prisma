@@ -1,14 +1,6 @@
-// Prisma schema for Debrief — Event-to-Pipeline Slack bot.
-//
-// Design principle (validated against the live graph8 API): graph8 is the brain
-// and system of record. It owns the *outcome definition* — the target profile
-// (Persona/ICP), the extraction/drafting LLM skills, the pipeline, and the
-// hot-lead workflow. Debrief stores only what graph8 cannot know: the Slack
-// channel<->event binding, dedupe keys, live per-thread conversation state, the
-// operator map, and *pointers* (graph8 object ids) into graph8.
-
 generator client {
   provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/client"
 }
 
 datasource db {
@@ -111,6 +103,30 @@ model OperatorMap {
   displayName  String?
   signature    String? // email sign-off
 }
+
+// Workspaces and members live in Clerk (Organizations) — `workspaceId` columns hold the Clerk
+// `org_...` id. There is no local mirror of users or workspaces yet.
+
+/// A workspace's Slack install: one bot per workspace, posting to one chosen channel.
+model SlackConnection {
+  id                String   @id @default(cuid())
+  workspaceId       String   @unique @map("workspace_id")
+  teamId            String   @map("team_id")
+  teamName          String   @map("team_name")
+  botUserId         String   @map("bot_user_id")
+  /// Bot token (xoxb-…), encrypted with `src/server/crypto/secret-box.ts`. Never sent to the client.
+  accessToken       String   @map("access_token")
+  grantedScopes     String[] @map("granted_scopes")
+  channelId         String?  @map("channel_id")
+  channelName       String?  @map("channel_name")
+  connectedByUserId String   @map("connected_by_user_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([teamId])
+  @@map("slack_connections")
+}
+
 
 enum InputType {
   VOICE

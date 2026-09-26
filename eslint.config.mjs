@@ -13,6 +13,17 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
   ]),
+  // Same relaxations as Veleads: the React Compiler rules below flag the effect-driven
+  // patterns the shared UI (theme provider, OAuth callback banners) is built on.
+  {
+    rules: {
+      "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
+      "react-hooks/immutability": "off",
+      "react-hooks/set-state-in-effect": "off",
+      "react-hooks/refs": "off",
+      "@next/next/no-img-element": "warn",
+    },
+  },
 ]);
 
 export default eslintConfig;
