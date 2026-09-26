@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 
-import { getSlackConfig, verifyState } from '@/server/slack/oauth';
+import { appBaseUrl, getSlackConfig, verifyState } from '@/server/slack/oauth';
 import { completeInstall } from '@/server/slack/service';
 
 /**
@@ -15,7 +15,8 @@ import { completeInstall } from '@/server/slack/service';
 export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
   const done = (connected: boolean, reason?: string) => {
-    const url = new URL('/integrations', request.nextUrl.origin);
+    // Back to the address the user started on — see `appBaseUrl` for why not the request origin.
+    const url = new URL('/integrations', appBaseUrl(request.nextUrl.origin));
     url.searchParams.set('connected', connected ? '1' : '0');
     if (reason) url.searchParams.set('reason', reason);
     return NextResponse.redirect(url);

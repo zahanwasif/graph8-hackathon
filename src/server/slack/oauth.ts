@@ -31,21 +31,27 @@ export interface SlackConfig {
 }
 
 /**
- * Slack matches `redirect_uri` exactly against the app's configured list, so it is built from
- * `NEXT_PUBLIC_APP_URL` when set. Falling back to the request origin keeps Vercel previews
- * working, provided that preview URL is registered in the Slack app too.
+ * The app's public base URL: `NEXT_PUBLIC_APP_URL` when set, else the request origin.
+ *
+ * Prefer the env var. Behind a tunnel (ngrok) or proxy the request origin is whatever the dev
+ * server thinks it is — e.g. `localhost:3000` — not the address the browser is on. The fallback
+ * keeps Vercel previews working, provided that preview URL is registered in the Slack app too.
  */
+export function appBaseUrl(requestOrigin: string): string {
+  return (process.env.NEXT_PUBLIC_APP_URL || requestOrigin).replace(/\/$/, '');
+}
+
+/** Slack matches `redirect_uri` exactly against the app's configured list. */
 export function getSlackConfig(requestOrigin: string): SlackConfig {
   const clientId = process.env.SLACK_CLIENT_ID;
   const clientSecret = process.env.SLACK_CLIENT_SECRET;
   if (!clientId || !clientSecret) {
     throw new HttpError(503, 'Slack is not configured. Set SLACK_CLIENT_ID and SLACK_CLIENT_SECRET.');
   }
-  const base = process.env.NEXT_PUBLIC_APP_URL ?? requestOrigin;
   return {
     clientId,
     clientSecret,
-    redirectUri: `${base.replace(/\/$/, '')}/api/integrations/slack/callback`,
+    redirectUri: `${appBaseUrl(requestOrigin)}/api/integrations/slack/callback`,
   };
 }
 
