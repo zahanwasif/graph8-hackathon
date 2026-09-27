@@ -13,6 +13,8 @@ import {
 } from '@/server/slack/service';
 import { DEFAULT_CAPTURE_TAGS, matchSpokenTag, matchTextTag } from '@/server/slack/tags';
 import { ensureCriteriaScoreField, setCriteriaScore, upsertContact } from '@/server/graph8/glue';
+import { addLeadSchema } from '@/server/events/schemas';
+import { startIntakeLead } from '@/server/events/service';
 import type { SlackEventEnvelope, SlackFile, SlackMessageEvent } from '@/server/slack/events';
 
 /** Where a thread reply goes. The Events API is keyed by team, not our workspace. */
@@ -190,6 +192,62 @@ export async function ingestSlackEvent(envelope: SlackEventEnvelope): Promise<vo
   // Extraction runs in the same post-response context. Text, link and (transcribed) voice
   // captures run now; images wait for vision (not yet wired) — see runExtraction.
   await runExtraction(captureId, thread);
+
+  // Send the contact through the event's graph8 intake workflow (create → enrich → score → list),
+  // same as the "Add lead" button. Runs even if extraction failed — Groq's fields are enough.
+  await queueCaptureLead(captureId, thread);
+}
+
+/**
+ * Auto-add a capture's contact to the event's lead pipeline. Best effort: skips (logged) when the
+ * event has no intake workflow, the capture already has a lead, or there's no name/email/company;
+ * never throws. The Leads tab settles the run's status + score on read.
+ */
+export async function queueCaptureLead(captureId: string, thread: ThreadContext): Promise<void> {
+  try {
+    const capture = await db().capture.findUnique({
+      where: { id: captureId },
+      include: { event: { select: { id: true, workspaceId: true, graph8IntakeWorkflowId: true } }, lead: true },
+    });
+    if (!capture || capture.lead) return;
+
+    const workflowId = capture.event.graph8IntakeWorkflowId;
+    if (!workflowId) {
+      console.info(`[capture] ${captureId}: event ${capture.event.id} has no intake workflow; lead not queued`);
+      return;
+    }
+
+    const [nameFirst, ...nameRest] = (capture.personName ?? '').trim().split(/\s+/);
+    const parsed = addLeadSchema.safeParse({
+      email: capture.personEmail ?? '',
+      firstName: capture.personFirstName ?? nameFirst ?? '',
+      lastName: capture.personLastName ?? nameRest.join(' '),
+      jobTitle: capture.personTitle ?? '',
+      companyDomain: capture.personCompany ?? '',
+    });
+    if (!parsed.success) {
+      console.info(`[capture] ${captureId}: no name/email/company found; lead not queued`);
+      return;
+    }
+
+    const result = await startIntakeLead({
+      event: { id: capture.event.id, graph8IntakeWorkflowId: workflowId },
+      workspaceId: capture.event.workspaceId,
+      lead: parsed.data,
+      captureId,
+      notes: capture.rawText,
+    });
+
+    await safePost(
+      thread,
+      result.status === 'FAILED'
+        ? `⚠️ Couldn't add to the lead pipeline: ${result.error ?? 'unknown error'}`
+        : '📥 Added to the lead pipeline. Enrichment and score will show in the Leads tab.',
+      captureId,
+    );
+  } catch (error) {
+    console.error(`[capture] ${captureId}: queueing lead failed`, error);
+  }
 }
 
 /**
