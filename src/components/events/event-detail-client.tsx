@@ -13,6 +13,7 @@ import {
   MessageSquare,
   Plus,
   Rocket,
+  Send,
   Target,
   Trash2,
   User,
@@ -22,6 +23,7 @@ import {
 
 import { CaptureRow, dispositionVariant } from '@/components/captures/capture-row';
 import { WorkflowBuilder } from '@/components/events/workflow-builder';
+import { EventSendersClient } from '@/components/events/event-senders-client';
 import { AddLeadDialog } from '@/components/events/add-lead-dialog';
 import { ConfirmActionDialog } from '@/components/confirm-action-dialog';
 import { Badge } from '@/components/ui/badge';
@@ -48,12 +50,13 @@ function errorMessage(error: unknown): string {
   return 'Something went wrong. Try again.';
 }
 
-type EventTab = 'captures' | 'leads' | 'workflow';
+type EventTab = 'captures' | 'leads' | 'workflow' | 'sending';
 
 const EVENT_TABS: { id: EventTab; label: string; icon: typeof MessageSquare }[] = [
   { id: 'captures', label: 'Captures', icon: MessageSquare },
   { id: 'leads', label: 'Leads', icon: Users },
   { id: 'workflow', label: 'Workflow', icon: Workflow },
+  { id: 'sending', label: 'Sending', icon: Send },
 ];
 
 /** Every enriched field graph8 returned for the contact, rendered as labelled chips. */
@@ -356,6 +359,15 @@ export function EventDetailClient({ eventId }: { eventId: string }) {
               publishedSequenceId={event.graph8SequenceId}
             />
           </div>
+
+          {tab === 'sending' ? (
+            <EventSendersClient
+              eventId={eventId}
+              isAdmin={isAdmin}
+              selectedIds={event.senderMailboxIds}
+              hasPublishedSequence={event.graph8SequenceId !== null}
+            />
+          ) : null}
         </>
       )}
 

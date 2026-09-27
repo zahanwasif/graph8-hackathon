@@ -13,6 +13,7 @@ import {
   importCaptureLeads,
   launchEvent,
   publishSequence,
+  setEventSenders,
   type AddLeadBody,
   type CreateEventBody,
   type PublishSequenceBody,
@@ -118,6 +119,24 @@ export function usePublishSequence(eventId: string) {
     onSuccess: () => {
       if (!workspaceId) return;
       // Refresh the event so graph8SequenceId (published state) reflects immediately.
+      queryClient.invalidateQueries({ queryKey: eventKeys.detail(workspaceId, eventId) });
+    },
+  });
+}
+
+/** Set which mailboxes the event's sequence sends from (Sending tab), then refresh the event. */
+export function useSetEventSenders(eventId: string) {
+  const { organization } = useOrganization();
+  const workspaceId = organization?.id;
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (mailboxIds: string[]) => {
+      if (!workspaceId) throw new Error('No workspace selected');
+      return setEventSenders(workspaceId, eventId, mailboxIds);
+    },
+    onSuccess: () => {
+      if (!workspaceId) return;
       queryClient.invalidateQueries({ queryKey: eventKeys.detail(workspaceId, eventId) });
     },
   });

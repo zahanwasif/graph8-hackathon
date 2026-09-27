@@ -50,3 +50,10 @@ export const publishSequenceSchema = z.object({
 });
 
 export type PublishSequenceInput = z.infer<typeof publishSequenceSchema>;
+
+/** Input for choosing which connected mailboxes an event's sequence sends from (the Sending tab). */
+export const setEventSendersSchema = z.object({
+  mailboxIds: z.array(z.string().trim().min(1)).max(50),
+});
+
+export type SetEventSendersInput = z.infer<typeof setEventSendersSchema>;

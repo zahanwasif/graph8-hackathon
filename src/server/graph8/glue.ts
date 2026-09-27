@@ -552,6 +552,16 @@ export interface CadenceStepInput {
   waitDays: number;
 }
 
+/** A sending mailbox to attach to the sequence as an email channel (what it sends from). */
+export interface SequenceChannelInput {
+  /** graph8 mailbox id (numeric). */
+  mailboxId: string;
+  /** The mailbox address, used as the channel value. */
+  email: string;
+  /** graph8 mailbox provider; maps to the channel type (SMTP/GMAIL/INBOXKIT). */
+  provider?: string | null;
+}
+
 export interface CreateSequenceInput {
   eventName: string;
   /** The sequence owner in graph8 — the signed-in user's email. */
@@ -563,6 +573,19 @@ export interface CreateSequenceInput {
   /** End remaining steps once a lead replies (the builder's "Stop on reply" rule). */
   finishOnReply: boolean;
   steps: CadenceStepInput[];
+  /**
+   * Email sending channels (mailboxes) the sequence sends from. Without at least one, launching a
+   * sequence with EMAIL steps fails with "no email channels configured".
+   */
+  channels: SequenceChannelInput[];
+}
+
+/** Map a graph8 mailbox provider to a sequence channel type. SMTP/IMAP mailboxes send over SMTP. */
+function channelTypeForProvider(provider?: string | null): 'SMTP' | 'GMAIL' | 'INBOXKIT' {
+  const value = (provider ?? '').toLowerCase();
+  if (value.includes('gmail') || value.includes('google')) return 'GMAIL';
+  if (value.includes('inboxkit')) return 'INBOXKIT';
+  return 'SMTP';
 }
 
 /** builder node type → graph8 `SequenceStepType`. Calls run as manual dialer tasks. */
@@ -604,6 +627,12 @@ export async function createEventSequence(
     step_data: stepData(step),
   }));
 
+  const channels = input.channels.map((channel) => ({
+    channel_id: Number(channel.mailboxId),
+    channel_value: channel.email,
+    channel_type: channelTypeForProvider(channel.provider),
+  }));
+
   const created = (await graph8().sequences.create({
     name: `Event follow-up: ${input.eventName}`,
     user_email: input.ownerEmail,
@@ -611,6 +640,7 @@ export async function createEventSequence(
     campaign_id: input.campaignId,
     ...(input.listId ? { associated_list_id: Number(input.listId) } : {}),
     steps,
+    ...(channels.length ? { channels } : {}),
   })) as unknown as { id?: string | number; data?: { id?: string | number } };
 
   const id = created.id ?? created.data?.id;
@@ -624,4 +654,93 @@ export async function createEventSequence(
  */
 export async function runSequence(sequenceId: string): Promise<void> {
   await graph8().sequences.run(sequenceId);
+}
+
+/**
+ * A connected sending mailbox, trimmed to the fields the UI shows. graph8 is the source of truth;
+ * SMTP/IMAP passwords are write-only and never returned, so they never appear here.
+ */
+export interface MailboxSummary {
+  id: string;
+  email: string | null;
+  displayName: string | null;
+  provider: string | null;
+  connectionStatus: string | null;
+  dailyLimit: number | null;
+  createdAt: string | null;
+}
+
+/** SMTP/IMAP mailbox connection details. Google/Microsoft mailboxes need OAuth and aren't connectable here. */
+export interface ConnectMailboxInput {
+  email: string;
+  displayName?: string | null;
+  smtpAddress: string;
+  smtpPort?: number | null;
+  smtpUsername: string;
+  smtpPassword: string;
+  imapAddress: string;
+  imapPort?: number | null;
+  imapUsername: string;
+  imapPassword: string;
+  dailyLimit?: number | null;
+}
+
+/** graph8's mailbox list row (duck-typed — we only read the fields we surface). */
+interface RawMailbox {
+  id: string | number;
+  email?: string | null;
+  display_name?: string | null;
+  provider?: string | null;
+  connection_status?: string | null;
+  daily_limit?: number | null;
+  created_at?: string | null;
+}
+
+/**
+ * List the graph8 org's connected sending mailboxes. Mailboxes are org-wide in graph8 (one org
+ * per deployment — see `client.ts`), so this is not workspace-scoped; the route enforces access.
+ */
+export async function listMailboxes(): Promise<MailboxSummary[]> {
+  const res = (await graph8().mailboxes.list({ include_archived: false })) as unknown as
+    | RawMailbox[]
+    | { data?: RawMailbox[]; mailboxes?: RawMailbox[]; items?: RawMailbox[] };
+  const rows = Array.isArray(res) ? res : (res.data ?? res.mailboxes ?? res.items ?? []);
+  return rows.map((m) => ({
+    id: String(m.id),
+    email: m.email ?? null,
+    displayName: m.display_name ?? null,
+    provider: m.provider ?? null,
+    connectionStatus: m.connection_status ?? null,
+    dailyLimit: m.daily_limit ?? null,
+    createdAt: m.created_at ?? null,
+  }));
+}
+
+/**
+ * Connect an SMTP/IMAP sending mailbox in graph8. This is what a launched sequence sends from —
+ * without at least one email channel, `runSequence` fails with "no email channels configured".
+ * Passwords are forwarded straight to graph8 and never stored in this app's DB.
+ */
+export async function createMailbox(input: ConnectMailboxInput): Promise<{ id: string }> {
+  const created = (await graph8().mailboxes.create({
+    email: input.email,
+    smtp_address: input.smtpAddress,
+    smtp_username: input.smtpUsername,
+    smtp_password: input.smtpPassword,
+    imap_address: input.imapAddress,
+    imap_username: input.imapUsername,
+    imap_password: input.imapPassword,
+    ...(input.displayName ? { display_name: input.displayName } : {}),
+    ...(input.smtpPort ? { smtp_port: input.smtpPort } : {}),
+    ...(input.imapPort ? { imap_port: input.imapPort } : {}),
+    ...(input.dailyLimit ? { daily_limit: input.dailyLimit } : {}),
+  })) as unknown as { id?: string | number; data?: { id?: string | number } };
+  const id = created.id ?? created.data?.id;
+  if (id == null) throw new Error('graph8 mailboxes.create returned no id');
+  return { id: String(id) };
+}
+
+/** Disconnect (delete) a sending mailbox in graph8. Mailbox ids are numeric; we store them as strings. */
+export async function deleteMailbox(mailboxId: string): Promise<void> {
+  await graph8().mailboxes.delete(Number(mailboxId));
 }

@@ -24,6 +24,22 @@ export const forbidden = (message = 'You do not have access to this workspace') 
 export const notFound = (message = 'Not found') => new HttpError(404, message);
 export const badGateway = (message: string) => new HttpError(502, message);
 
+/**
+ * A graph8 SDK error (`G8Error`), duck-typed so this layer stays decoupled from the SDK.
+ * These carry a real, user-actionable reason (e.g. "no email channels configured"); surfacing
+ * `detail`/`message` beats a blind 500.
+ */
+function isGraph8Error(
+  error: unknown,
+): error is { status: number; message: string; detail?: string | null } {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { name?: unknown }).name === 'G8Error' &&
+    typeof (error as { status?: unknown }).status === 'number'
+  );
+}
+
 /** Turns whatever a handler threw into a JSON error response. Unknown errors become a 500. */
 export function toErrorResponse(error: unknown): NextResponse {
   if (error instanceof HttpError) {
@@ -36,6 +52,15 @@ export function toErrorResponse(error: unknown): NextResponse {
     return NextResponse.json(
       { message: 'Invalid request', errors: error.issues.map((issue) => issue.message) },
       { status: 400 },
+    );
+  }
+  if (isGraph8Error(error)) {
+    // Pass through client-side reasons (4xx) verbatim; treat graph8 server/other errors as an
+    // upstream failure (502) rather than pretending it was this app's own 500.
+    const status = error.status >= 400 && error.status < 500 ? error.status : 502;
+    return NextResponse.json(
+      { message: error.detail || error.message || 'graph8 request failed' },
+      { status },
     );
   }
   console.error(error);

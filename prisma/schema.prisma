@@ -41,6 +41,10 @@ model Event {
   graph8IntakeWorkflowId String? // form-intake workflow: create contact → enrich → score → add to list
   graph8HotWorkflowId    String? // hot-lead workflow (alerts, delay, voice call)
 
+  // graph8 mailbox ids chosen (Sending tab) as this event's sequence email channels. Empty = use
+  // every connected mailbox at publish time. graph8 owns the mailboxes; these are just pointers.
+  graph8SenderMailboxIds String[] @default([])
+
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

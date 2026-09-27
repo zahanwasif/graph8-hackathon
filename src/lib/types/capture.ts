@@ -77,6 +77,8 @@ export interface EventWithCaptures {
   graph8CampaignId: string | null;
   /** Present once the workflow builder has published a cadence; Launch runs this sequence. */
   graph8SequenceId: string | null;
+  /** graph8 mailbox ids chosen as this event's sending accounts (Sending tab). Empty = use all. */
+  senderMailboxIds: string[];
   captureCount: number;
   captures: CaptureListItem[];
 }

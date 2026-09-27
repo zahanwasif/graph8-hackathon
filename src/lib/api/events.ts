@@ -130,3 +130,15 @@ export async function publishSequence(
     { method: 'POST', body: JSON.stringify(body) },
   );
 }
+
+/** Set which connected mailboxes this event's sequence sends from (the Sending tab). Admin-only. */
+export async function setEventSenders(
+  workspaceId: string,
+  eventId: string,
+  mailboxIds: string[],
+): Promise<{ senderMailboxIds: string[] }> {
+  return apiFetch<{ senderMailboxIds: string[] }>(
+    `/workspaces/${workspaceId}/events/${eventId}/senders`,
+    { method: 'PUT', body: JSON.stringify({ mailboxIds }) },
+  );
+}

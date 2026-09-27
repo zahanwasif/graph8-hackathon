@@ -8,6 +8,7 @@ import {
   createIntakeWorkflow,
   executeIntakeWorkflow,
   launchCampaign,
+  listMailboxes,
   provisionEvent,
   runSequence,
   type IntakeLead,
@@ -321,11 +322,30 @@ export async function publishEventSequence(
 ): Promise<{ sequenceId: string }> {
   const event = await db().event.findFirst({
     where: { id: eventId, ...workspaceScope(workspaceId) },
-    select: { id: true, name: true, graph8CampaignId: true, graph8ListId: true },
+    select: {
+      id: true,
+      name: true,
+      graph8CampaignId: true,
+      graph8ListId: true,
+      graph8SenderMailboxIds: true,
+    },
   });
   if (!event) throw notFound('Event not found');
   if (!event.graph8CampaignId) {
     throw badRequest('This event has no graph8 campaign yet, so its cadence can’t be published.');
+  }
+
+  // Resolve the event's sending accounts into email channels. The selected mailboxes (Sending tab)
+  // win; an empty selection falls back to every connected mailbox so a launch still has a channel.
+  const mailboxes = await listMailboxes();
+  const selected = event.graph8SenderMailboxIds;
+  const chosen = selected.length
+    ? mailboxes.filter((mailbox) => selected.includes(mailbox.id))
+    : mailboxes;
+  if (chosen.length === 0) {
+    throw badRequest(
+      'No sending account is connected. Add an email account (Settings → Email accounts) before publishing.',
+    );
   }
 
   const { sequenceId } = await createEventSequence({
@@ -335,10 +355,41 @@ export async function publishEventSequence(
     listId: event.graph8ListId,
     finishOnReply: input.finishOnReply,
     steps: input.steps,
+    channels: chosen.map((mailbox) => ({
+      mailboxId: mailbox.id,
+      email: mailbox.email ?? '',
+      provider: mailbox.provider,
+    })),
   });
 
   await db().event.update({ where: { id: event.id }, data: { graph8SequenceId: sequenceId } });
   return { sequenceId };
+}
+
+/**
+ * Set which connected mailboxes this event's sequence sends from (the Sending tab). Stored as
+ * pointers on the event; attached as the sequence's email channels at publish. Changing the
+ * selection takes effect the next time the workflow is published. Admin-only (route-enforced).
+ */
+export async function setEventSenders(
+  workspaceId: string,
+  eventId: string,
+  mailboxIds: string[],
+): Promise<{ senderMailboxIds: string[] }> {
+  const event = await db().event.findFirst({
+    where: { id: eventId, ...workspaceScope(workspaceId) },
+    select: { id: true },
+  });
+  if (!event) throw notFound('Event not found');
+
+  // Only persist ids that map to a real connected mailbox — a stale/guessed id would silently
+  // drop that sender at publish and confuse the "which channels?" picture.
+  const mailboxes = await listMailboxes();
+  const valid = new Set(mailboxes.map((mailbox) => mailbox.id));
+  const senderMailboxIds = [...new Set(mailboxIds)].filter((id) => valid.has(id));
+
+  await db().event.update({ where: { id: event.id }, data: { graph8SenderMailboxIds: senderMailboxIds } });
+  return { senderMailboxIds };
 }
 
 /**

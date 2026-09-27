@@ -82,6 +82,7 @@ export async function getWorkspaceEvent(
     workspaceId: event.workspaceId,
     graph8CampaignId: event.graph8CampaignId,
     graph8SequenceId: event.graph8SequenceId,
+    senderMailboxIds: event.graph8SenderMailboxIds,
     captureCount: event.captures.length,
     captures: event.captures.map(toCaptureItem),
   };

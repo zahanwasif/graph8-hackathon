@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { UserButton } from '@clerk/nextjs';
-import { Blocks, LayoutDashboard, MessagesSquare, Settings, Target } from 'lucide-react';
+import { Blocks, LayoutDashboard, Mail, MessagesSquare, Settings, Target } from 'lucide-react';
 
 import {
   Sidebar,
@@ -32,11 +32,20 @@ const navItems = [
   {
     title: 'Messages',
     href: '/messages',
-    icon: MessagesSquare,}
-   , {
+    icon: MessagesSquare,
+  },
+  {
     title: 'Events',
     href: '/events',
     icon: Target,
+  },
+];
+
+const settingsItems = [
+  {
+    title: 'Email accounts',
+    href: '/email-accounts',
+    icon: Mail,
   },
   {
     title: 'Integrations',
@@ -82,6 +91,25 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               {navItems.map((item) => (
+                <SidebarMenuItem key={item.href}>
+                  <SidebarMenuButton
+                    isActive={isActive(pathname, item.href)}
+                    tooltip={item.title}
+                    render={<Link href={item.href} />}
+                  >
+                    <item.icon />
+                    <span>{item.title}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+        <SidebarGroup>
+          <SidebarGroupLabel>Settings</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {settingsItems.map((item) => (
                 <SidebarMenuItem key={item.href}>
                   <SidebarMenuButton
                     isActive={isActive(pathname, item.href)}
