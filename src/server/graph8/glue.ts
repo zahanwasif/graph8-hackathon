@@ -277,7 +277,7 @@ export interface IntakeLead {
   email?: string;
   first_name?: string;
   last_name?: string;
-  company?: string;
+  company_domain?: string;
   job_title?: string;
   /** Pre-composed lead description for the scorer — Graph8 only interpolates single `${ref}`s,
    *  so the score node reads `${trigger.lead_text}` rather than a composite template. */
@@ -289,11 +289,11 @@ export function composeLeadText(lead: {
   first_name?: string | null;
   last_name?: string | null;
   job_title?: string | null;
-  company?: string | null;
+  company_domain?: string | null;
   email?: string | null;
 }): string {
   const name = [lead.first_name, lead.last_name].filter(Boolean).join(' ') || 'Unknown';
-  return `Name: ${name}. Title: ${lead.job_title ?? ''}. Company: ${lead.company ?? ''}. Email: ${lead.email ?? ''}.`;
+  return `Name: ${name}. Title: ${lead.job_title ?? ''}. Company: ${lead.company_domain ?? ''}. Email: ${lead.email ?? ''}.`;
 }
 
 /**
@@ -317,7 +317,7 @@ function buildIntakeWorkflowConfig(input: IntakeWorkflowInput): Record<string, u
         name: 'Form submitted',
         config: {
           trigger_type: 'new_form_submitted',
-          form_fields: ['email', 'first_name', 'last_name', 'company', 'job_title', 'lead_text'],
+          form_fields: ['email', 'first_name', 'last_name', 'company_domain', 'job_title', 'lead_text'],
         },
         position: { x: 0, y: 0 },
         connections: ['create_contact-1'],
@@ -331,7 +331,7 @@ function buildIntakeWorkflowConfig(input: IntakeWorkflowInput): Record<string, u
           first_name: '${trigger.first_name}',
           last_name: '${trigger.last_name}',
           job_title: '${trigger.job_title}',
-          company_name: '${trigger.company}',
+          company_domain: '${trigger.company_domain}',
           list_id: listId,
         },
         position: { x: 250, y: 0 },

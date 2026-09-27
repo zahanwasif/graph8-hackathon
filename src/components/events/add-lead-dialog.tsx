@@ -34,12 +34,12 @@ function AddLeadForm({ eventId, onOpenChange }: { eventId: string; onOpenChange:
   const [email, setEmail] = useState('');
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
-  const [company, setCompany] = useState('');
+  const [companyDomain, setCompanyDomain] = useState('');
   const [jobTitle, setJobTitle] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const hasIdentifier = Boolean(
-    email.trim() || firstName.trim() || lastName.trim() || company.trim(),
+    email.trim() || firstName.trim() || lastName.trim() || companyDomain.trim(),
   );
   const canSubmit = hasIdentifier && !addLead.isPending;
 
@@ -52,7 +52,7 @@ function AddLeadForm({ eventId, onOpenChange }: { eventId: string; onOpenChange:
         email: email.trim(),
         firstName: firstName.trim(),
         lastName: lastName.trim(),
-        company: company.trim(),
+        companyDomain: companyDomain.trim(),
         jobTitle: jobTitle.trim(),
       });
       if (result.status === 'FAILED') {
@@ -142,16 +142,19 @@ function AddLeadForm({ eventId, onOpenChange }: { eventId: string; onOpenChange:
 
         <div className="space-y-1.5">
           <label htmlFor="lead-company" className="text-sm font-medium">
-            Company
+            Company domain
           </label>
           <Input
             id="lead-company"
-            value={company}
-            onChange={(event) => setCompany(event.target.value)}
-            placeholder="Stripe"
-            maxLength={200}
+            value={companyDomain}
+            onChange={(event) => setCompanyDomain(event.target.value)}
+            placeholder="stripe.com"
+            maxLength={255}
             disabled={addLead.isPending}
           />
+          <p className="text-xs text-muted-foreground">
+            The company&rsquo;s website domain — used to anchor enrichment.
+          </p>
         </div>
 
         {error ? (
