@@ -36,6 +36,13 @@ export async function listMessages(workspaceId: string): Promise<CapturedMessage
     channelName: capture.event.name,
     status: capture.status,
     mediaDurationSec: capture.mediaDurationSec,
+    contact: {
+      email: capture.personEmail,
+      firstName: capture.personFirstName,
+      lastName: capture.personLastName,
+      jobTitle: capture.personTitle,
+      company: capture.personCompany,
+    },
     createdAt: capture.createdAt.toISOString(),
   }));
 }

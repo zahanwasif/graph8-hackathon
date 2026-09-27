@@ -102,11 +102,12 @@ export async function completeInstall(input: {
   const channelReset =
     existing && existing.teamId !== data.teamId ? { channelId: null, channelName: null } : {};
 
-  await db().slackConnection.upsert({
+  const saved = await db().slackConnection.upsert({
     where: { workspaceId: input.workspaceId },
     create: { workspaceId: input.workspaceId, ...data },
     update: { ...data, ...channelReset },
   });
+  if (saved.channelId) await claimOrphanedChannelEvent(input.workspaceId, saved.channelId);
 }
 
 /** Public channels, plus private ones the bot has been invited to, alphabetically. */
@@ -171,7 +172,41 @@ export async function setChannel(workspaceId: string, channelId: string): Promis
     where: { workspaceId },
     data: { channelId, channelName },
   });
+  await claimOrphanedChannelEvent(workspaceId, channelId);
   return toConnection(updated);
+}
+
+/**
+ * Hands the channel's `Event` (and so its captures) to `workspaceId` — but only when the Event is
+ * orphaned: unassigned, or owned by a workspace that no longer has a Slack connection.
+ *
+ * Needed because the same Slack channel can be reconnected from a different workspace, e.g. the
+ * development and production Clerk instances issue different org ids for "the same" workspace.
+ * Without this the Event keeps pointing at the old org and its captures vanish from the dashboard.
+ * An Event whose workspace is still connected is never taken.
+ */
+export async function claimOrphanedChannelEvent(workspaceId: string, channelId: string): Promise<void> {
+  const event = await db().event.findUnique({
+    where: { slackChannelId: channelId },
+    select: { id: true, workspaceId: true },
+  });
+  if (!event || event.workspaceId === workspaceId) return;
+
+  if (event.workspaceId) {
+    const owner = await db().slackConnection.findUnique({
+      where: { workspaceId: event.workspaceId },
+      select: { id: true },
+    });
+    if (owner) return;
+  }
+
+  await db().event.update({ where: { id: event.id }, data: { workspaceId } });
+  console.log('[slack] event reassigned to connected workspace', {
+    eventId: event.id,
+    channelId,
+    from: event.workspaceId,
+    to: workspaceId,
+  });
 }
 
 /** Replaces the hashtags that mark a Slack message for capture. Tags arrive normalised. */

@@ -65,6 +65,14 @@ export function CaptureRow({ capture }: { capture: CaptureListItem }) {
           <span className="font-medium">{name}</span>
           {who ? <span className="text-sm text-muted-foreground">· {who}</span> : null}
         </div>
+        {capture.personEmail ? (
+          <a
+            href={`mailto:${capture.personEmail}`}
+            className="block truncate text-sm text-primary hover:underline"
+          >
+            {capture.personEmail}
+          </a>
+        ) : null}
         {detail ? <p className="line-clamp-2 text-sm text-muted-foreground">{detail}</p> : null}
         {capture.nextStep ? (
           <p className="text-sm">
