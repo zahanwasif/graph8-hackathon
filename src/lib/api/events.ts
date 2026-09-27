@@ -88,3 +88,28 @@ export async function launchEvent(
     { method: 'POST' },
   );
 }
+
+/** One cadence step for publishing — 'wait' nodes are folded into the next step's `waitDays`. */
+export interface PublishSequenceStep {
+  type: 'email' | 'call' | 'sms';
+  subject: string;
+  content: string;
+  waitDays: number;
+}
+
+export interface PublishSequenceBody {
+  finishOnReply: boolean;
+  steps: PublishSequenceStep[];
+}
+
+/** Publish the workflow builder's cadence as a real (drafted) graph8 sequence. Admin-only. */
+export async function publishSequence(
+  workspaceId: string,
+  eventId: string,
+  body: PublishSequenceBody,
+): Promise<{ sequenceId: string }> {
+  return apiFetch<{ sequenceId: string }>(
+    `/workspaces/${workspaceId}/events/${eventId}/sequence`,
+    { method: 'POST', body: JSON.stringify(body) },
+  );
+}

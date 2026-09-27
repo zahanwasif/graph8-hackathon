@@ -4,14 +4,16 @@ import { db } from '@/server/db';
 import { graph8, isGraph8Configured } from '@/server/graph8/client';
 import {
   composeLeadText,
+  createEventSequence,
   createIntakeWorkflow,
   executeIntakeWorkflow,
   launchCampaign,
   provisionEvent,
+  runSequence,
   type IntakeLead,
 } from '@/server/graph8/glue';
 import { badRequest, HttpError, notFound } from '@/server/http';
-import type { AddLeadInput, CreateEventInput } from '@/server/events/schemas';
+import type { AddLeadInput, CreateEventInput, PublishSequenceInput } from '@/server/events/schemas';
 
 /** Match events for this workspace, plus seeded/unassigned ones. Mirrors `capture/read.ts`. */
 const workspaceScope = (workspaceId: string) => ({ OR: [{ workspaceId }, { workspaceId: null }] });
@@ -222,8 +224,48 @@ export async function addLeadToEvent(
 }
 
 /**
- * Launch the event's graph8 campaign — starts real outreach. Caller enforces admin +
- * the UI confirms first. Persists the resulting sequence id for enrollment/reads.
+ * Publish the workflow builder's cadence as a real, DRAFTED graph8 sequence, linked to the
+ * event's campaign + audience list. Nothing is sent — drafting only; the confirmed Launch step
+ * runs it. Stores the sequence id on the event so Launch runs *this* sequence (see `launchEvent`).
+ *
+ * Idempotent per publish: graph8 has no sequence-replace API, so re-publishing creates a fresh
+ * drafted sequence and repoints the event at it (the previous draft is orphaned, never launched).
+ */
+export async function publishEventSequence(
+  workspaceId: string,
+  eventId: string,
+  ownerEmail: string,
+  input: PublishSequenceInput,
+): Promise<{ sequenceId: string }> {
+  const event = await db().event.findFirst({
+    where: { id: eventId, ...workspaceScope(workspaceId) },
+    select: { id: true, name: true, graph8CampaignId: true, graph8ListId: true },
+  });
+  if (!event) throw notFound('Event not found');
+  if (!event.graph8CampaignId) {
+    throw badRequest('This event has no graph8 campaign yet, so its cadence can’t be published.');
+  }
+
+  const { sequenceId } = await createEventSequence({
+    eventName: event.name,
+    ownerEmail,
+    campaignId: event.graph8CampaignId,
+    listId: event.graph8ListId,
+    finishOnReply: input.finishOnReply,
+    steps: input.steps,
+  });
+
+  await db().event.update({ where: { id: event.id }, data: { graph8SequenceId: sequenceId } });
+  return { sequenceId };
+}
+
+/**
+ * Launch the event — starts real outreach. Caller enforces admin + the UI confirms first.
+ *
+ * Prefers the sequence published from the workflow builder (`graph8SequenceId`): that is the
+ * cadence the user actually authored, so we run it directly. Falls back to launching the dormant
+ * campaign (`campaigns.launch`) for events provisioned before a cadence was published. Persists
+ * the resulting sequence id for reads.
  */
 export async function launchEvent(
   workspaceId: string,
@@ -231,11 +273,18 @@ export async function launchEvent(
 ): Promise<{ sequenceId: string | null }> {
   const event = await db().event.findFirst({
     where: { id: eventId, ...workspaceScope(workspaceId) },
-    select: { id: true, graph8CampaignId: true },
+    select: { id: true, graph8CampaignId: true, graph8SequenceId: true },
   });
   if (!event) throw notFound('Event not found');
+
+  // Builder-published sequence wins — it's the cadence the user authored.
+  if (event.graph8SequenceId) {
+    await runSequence(event.graph8SequenceId);
+    return { sequenceId: event.graph8SequenceId };
+  }
+
   if (!event.graph8CampaignId) {
-    throw badRequest('This event has no graph8 campaign to launch.');
+    throw badRequest('This event has no cadence to launch. Publish a workflow first.');
   }
 
   const { sequenceId } = await launchCampaign(event.graph8CampaignId);

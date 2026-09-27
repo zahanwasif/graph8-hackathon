@@ -28,3 +28,25 @@ export const addLeadSchema = z
   });
 
 export type AddLeadInput = z.infer<typeof addLeadSchema>;
+
+/**
+ * Input for publishing the workflow builder's cadence as a real (drafted) graph8 sequence.
+ * "wait" nodes are already folded into each step's `waitDays` by the client — graph8 has no
+ * standalone wait step; the delay rides on the next step's `time_interval`.
+ */
+export const publishSequenceSchema = z.object({
+  finishOnReply: z.boolean(),
+  steps: z
+    .array(
+      z.object({
+        type: z.enum(['email', 'call', 'sms']),
+        subject: z.string().max(500).default(''),
+        content: z.string().max(10_000).default(''),
+        waitDays: z.number().int().min(0).max(365),
+      }),
+    )
+    .min(1, 'Add at least one outreach step before publishing.')
+    .max(50),
+});
+
+export type PublishSequenceInput = z.infer<typeof publishSequenceSchema>;

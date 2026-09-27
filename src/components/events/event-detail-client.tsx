@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 
 import { CaptureRow, dispositionVariant } from '@/components/captures/capture-row';
+import { WorkflowBuilder } from '@/components/events/workflow-builder';
 import { AddLeadDialog } from '@/components/events/add-lead-dialog';
 import { ConfirmActionDialog } from '@/components/confirm-action-dialog';
 import { Badge } from '@/components/ui/badge';
@@ -306,13 +307,16 @@ export function EventDetailClient({ eventId }: { eventId: string }) {
             )
           ) : null}
 
-          {tab === 'workflow' ? (
-            <EmptyState
-              icon={<Workflow />}
-              title="Workflow"
-              description="The graph8 intake workflow for this event will show here. Coming soon."
+          <div hidden={tab !== 'workflow'}>
+            <WorkflowBuilder
+              key={eventId}
+              eventId={eventId}
+              eventName={event.name}
+              workspaceId={event.workspaceId}
+              isAdmin={isAdmin}
+              publishedSequenceId={event.graph8SequenceId}
             />
-          ) : null}
+          </div>
         </>
       )}
 
@@ -345,9 +349,10 @@ export function EventDetailClient({ eventId }: { eventId: string }) {
         title="Launch this event?"
         description={
           <>
-            This launches the graph8 campaign for{' '}
-            <span className="font-medium text-foreground">{event?.name ?? 'this event'}</span> and
-            starts sending real outreach to everyone on its list. This can&apos;t be undone.
+            This starts real outreach for{' '}
+            <span className="font-medium text-foreground">{event?.name ?? 'this event'}</span> —
+            running {event?.graph8SequenceId ? 'the follow-up sequence you published' : 'its graph8 campaign'}{' '}
+            and sending to everyone on its list. This can&apos;t be undone.
           </>
         }
         confirmLabel="Launch"

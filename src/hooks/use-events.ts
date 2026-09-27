@@ -11,8 +11,10 @@ import {
   getWorkspaceEvent,
   getWorkspaceEvents,
   launchEvent,
+  publishSequence,
   type AddLeadBody,
   type CreateEventBody,
+  type PublishSequenceBody,
 } from '@/lib/api/events';
 import type { EventListItem, EventWithCaptures, LeadListItem } from '@/lib/types/capture';
 
@@ -97,6 +99,25 @@ export function useAddLead(eventId: string) {
       if (!workspaceId) return;
       queryClient.invalidateQueries({ queryKey: eventKeys.detail(workspaceId, eventId) });
       queryClient.invalidateQueries({ queryKey: eventKeys.leads(workspaceId, eventId) });
+    },
+  });
+}
+
+/** Publish the workflow builder's cadence as a real (drafted) graph8 sequence (admin-only). */
+export function usePublishSequence(eventId: string) {
+  const { organization } = useOrganization();
+  const workspaceId = organization?.id;
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (body: PublishSequenceBody) => {
+      if (!workspaceId) throw new Error('No workspace selected');
+      return publishSequence(workspaceId, eventId, body);
+    },
+    onSuccess: () => {
+      if (!workspaceId) return;
+      // Refresh the event so graph8SequenceId (published state) reflects immediately.
+      queryClient.invalidateQueries({ queryKey: eventKeys.detail(workspaceId, eventId) });
     },
   });
 }

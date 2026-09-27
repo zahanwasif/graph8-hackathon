@@ -540,3 +540,88 @@ export async function launchCampaign(campaignId: string): Promise<{ sequenceId: 
   };
   return { sequenceId: res.sequence_id ?? res.data?.sequence_id ?? null };
 }
+
+/** A cadence step from the workflow builder, with any preceding "wait" nodes folded into `waitDays`. */
+export interface CadenceStepInput {
+  /** 'wait' nodes are folded into the next step's delay, never passed here. */
+  type: 'email' | 'call' | 'sms';
+  /** Step-type-specific literal content. */
+  subject: string;
+  content: string;
+  /** Days to wait before this step runs (sum of the immediately preceding wait nodes). */
+  waitDays: number;
+}
+
+export interface CreateSequenceInput {
+  eventName: string;
+  /** The sequence owner in graph8 — the signed-in user's email. */
+  ownerEmail: string;
+  /** Link the sequence to the event's dormant campaign. */
+  campaignId: string;
+  /** The event's audience list, so enrollment/launch target the right contacts. */
+  listId?: string | null;
+  /** End remaining steps once a lead replies (the builder's "Stop on reply" rule). */
+  finishOnReply: boolean;
+  steps: CadenceStepInput[];
+}
+
+/** builder node type → graph8 `SequenceStepType`. Calls run as manual dialer tasks. */
+const STEP_TYPE: Record<CadenceStepInput['type'], 'EMAIL' | 'SMS' | 'PHONE'> = {
+  email: 'EMAIL',
+  sms: 'SMS',
+  call: 'PHONE',
+};
+
+/** Shape a builder step's literal content into graph8's `step_data` for its channel. */
+function stepData(step: CadenceStepInput): Record<string, unknown> {
+  switch (step.type) {
+    case 'email':
+      return { subject: step.subject, body: step.content };
+    case 'sms':
+      return { message_body: step.content };
+    case 'call':
+      return { instructions: step.content };
+  }
+}
+
+/**
+ * Create a DRAFTED graph8 sequence from the workflow builder's cadence — linked to the
+ * event's campaign and audience list. Nothing is sent: `sequences.create` drafts the
+ * sequence; `runSequence` (from the confirmed Launch step) starts the outreach.
+ *
+ * Wait nodes are not steps in graph8 — each step carries the delay before it runs as
+ * `time_interval` (seconds), so the caller folds preceding waits into `waitDays`. Steps
+ * use `MANUAL_TEMPLATE` since the builder supplies literal subject/body/instructions.
+ */
+export async function createEventSequence(
+  input: CreateSequenceInput,
+): Promise<{ sequenceId: string }> {
+  const steps = input.steps.map((step, index) => ({
+    step_order: index + 1,
+    step_type: STEP_TYPE[step.type],
+    input_type: 'MANUAL_TEMPLATE' as const,
+    time_interval: Math.round(step.waitDays) * 86_400,
+    step_data: stepData(step),
+  }));
+
+  const created = (await graph8().sequences.create({
+    name: `Event follow-up: ${input.eventName}`,
+    user_email: input.ownerEmail,
+    finish_on_reply: input.finishOnReply,
+    campaign_id: input.campaignId,
+    ...(input.listId ? { associated_list_id: Number(input.listId) } : {}),
+    steps,
+  })) as unknown as { id?: string | number; data?: { id?: string | number } };
+
+  const id = created.id ?? created.data?.id;
+  if (id == null) throw new Error('graph8 sequences.create returned no id');
+  return { sequenceId: String(id) };
+}
+
+/**
+ * Run a DRAFTED sequence — starts real outreach. ⚠️ The caller must confirm first.
+ * Used by the event launch step once the builder has published a sequence.
+ */
+export async function runSequence(sequenceId: string): Promise<void> {
+  await graph8().sequences.run(sequenceId);
+}

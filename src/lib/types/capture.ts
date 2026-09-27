@@ -75,6 +75,8 @@ export interface EventWithCaptures {
   workspaceId: string | null;
   /** Present once graph8 provisioning succeeded; gates the "Launch event" action. */
   graph8CampaignId: string | null;
+  /** Present once the workflow builder has published a cadence; Launch runs this sequence. */
+  graph8SequenceId: string | null;
   captureCount: number;
   captures: CaptureListItem[];
 }
