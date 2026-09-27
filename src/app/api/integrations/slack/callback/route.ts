@@ -14,6 +14,12 @@ import { completeInstall } from '@/server/slack/service';
  */
 export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
+  // Build the post-install redirect from the configured public URL, not the request origin.
+  // Behind a tunnel (ngrok) the forwarded Host is `localhost:3000` while the proto is `https`,
+  // so `request.nextUrl.origin` resolves to `https://localhost:3000` — an HTTPS URL to a plain
+  // HTTP server (ERR_SSL_PROTOCOL_ERROR). `NEXT_PUBLIC_APP_URL` is the same base used to register
+  // the redirect_uri, so it round-trips the browser back to the right origin.
+  const appBase = (process.env.NEXT_PUBLIC_APP_URL ?? request.nextUrl.origin).replace(/\/$/, '');
   const done = (connected: boolean, reason?: string) => {
     // Back to the address the user started on — see `appBaseUrl` for why not the request origin.
     const url = new URL('/integrations', appBaseUrl(request.nextUrl.origin));

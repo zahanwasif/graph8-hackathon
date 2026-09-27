@@ -185,6 +185,37 @@ export async function postMessage(workspaceId: string, text: string): Promise<vo
 }
 
 /**
+ * The connection for a Slack *team*, or null.
+ *
+ * The Events API posts to one app-wide URL and identifies the source by `team_id`, not by our
+ * workspace id — so the capture pipeline resolves the workspace this way.
+ */
+export async function getConnectionRowByTeam(teamId: string): Promise<SlackConnectionRow | null> {
+  return db().slackConnection.findFirst({ where: { teamId } });
+}
+
+/** Posts a reply inside a message's thread and returns the new message ts. */
+export async function postThreadReply(input: {
+  teamId: string;
+  channel: string;
+  threadTs: string;
+  text: string;
+}): Promise<string | undefined> {
+  const row = await getConnectionRowByTeam(input.teamId);
+  if (!row) throw notFound('Slack is not connected for this team');
+  try {
+    const result = await clientFor(row).chat.postMessage({
+      channel: input.channel,
+      thread_ts: input.threadTs,
+      text: input.text,
+    });
+    return result.ts;
+  } catch (error) {
+    throw toSlackHttpError('post the message', error);
+  }
+}
+
+/**
  * Revokes the bot token at Slack (best effort — it may already be dead) and forgets the
  * connection. The Slack app itself stays installed until a Slack admin removes it.
  */
