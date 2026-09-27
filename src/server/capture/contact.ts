@@ -2,7 +2,7 @@ import 'server-only';
 
 import { z } from 'zod';
 
-import { chatJson } from '@/server/llm/xai';
+import { chatJson } from '@/server/llm/groq';
 
 /**
  * Contact extraction: a captured message (typed text or a voice-note transcript) → the person it
@@ -17,27 +17,14 @@ export interface ExtractedContact {
   company: string | null;
 }
 
-const nullableString = { type: ['string', 'null'] };
-
-const CONTACT_JSON_SCHEMA = {
-  type: 'object',
-  properties: {
-    email: nullableString,
-    firstName: nullableString,
-    lastName: nullableString,
-    jobTitle: nullableString,
-    company: nullableString,
-  },
-  required: ['email', 'firstName', 'lastName', 'jobTitle', 'company'],
-  additionalProperties: false,
-};
-
+/** Small models sometimes omit a key or send "" instead of null — accept both as missing. */
+const field = z.string().nullish().transform((v) => v ?? null);
 const contactSchema = z.object({
-  email: z.string().nullable(),
-  firstName: z.string().nullable(),
-  lastName: z.string().nullable(),
-  jobTitle: z.string().nullable(),
-  company: z.string().nullable(),
+  email: field,
+  firstName: field,
+  lastName: field,
+  jobTitle: field,
+  company: field,
 });
 
 const SYSTEM_PROMPT = `You extract contact details from a short note a salesperson or recruiter posted after meeting someone. The note may be a typed Slack message or a speech-to-text transcript of a voice note, so expect filler words, spelled-out emails ("jane dot doe at acme dot com"), and transcription errors.
@@ -50,7 +37,10 @@ Return:
 - jobTitle: their role as stated (e.g. "VP of Sales"). Null if not stated.
 - company: the organisation they work for. Null if not stated.
 
-Never guess or invent values. Ignore hashtags such as #add-contact.`;
+Never guess or invent values. Ignore hashtags such as #add-contact.
+
+Respond with ONLY a JSON object with exactly these keys, using null for anything not stated:
+{"email": string|null, "firstName": string|null, "lastName": string|null, "jobTitle": string|null, "company": string|null}`;
 
 /** Personal mailbox providers — not a work email, whatever the model says. */
 const FREE_MAIL_DOMAINS = new Set([
@@ -90,15 +80,9 @@ function toWorkEmail(value: string | null): string | null {
 
 const clean = (value: string | null) => value?.trim() || null;
 
-/** Asks Grok for the contact in `text`. Throws on API/config errors — callers decide how to degrade. */
+/** Asks the LLM (Groq) for the contact in `text`. Throws on API/config errors — callers decide how to degrade. */
 export async function extractContact(text: string): Promise<ExtractedContact> {
-  const raw = await chatJson({
-    system: SYSTEM_PROMPT,
-    user: text,
-    schemaName: 'contact',
-    jsonSchema: CONTACT_JSON_SCHEMA,
-    zodSchema: contactSchema,
-  });
+  const raw = await chatJson({ system: SYSTEM_PROMPT, user: text, zodSchema: contactSchema });
 
   return {
     email: toWorkEmail(raw.email),

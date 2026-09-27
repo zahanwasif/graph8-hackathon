@@ -78,7 +78,7 @@ function Author({ message }: { message: CapturedMessage }) {
   );
 }
 
-/** Who the message is about, as extracted by Grok. */
+/** Who the message is about, as extracted by Groq. */
 function ContactCell({ message }: { message: CapturedMessage }) {
   const { email, firstName, lastName, jobTitle, company } = message.contact;
   const name = [firstName, lastName].filter(Boolean).join(' ');

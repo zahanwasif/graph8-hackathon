@@ -87,7 +87,7 @@ model Capture {
   personName    String?
   personTitle   String?
   personCompany String?
-  // Contact fields pulled from rawText by Grok (`src/server/capture/contact.ts`)
+  // Contact fields pulled from rawText by Groq (`src/server/capture/contact.ts`)
   personEmail     String? // work email only; free-mail addresses are dropped
   personFirstName String?
   personLastName  String?

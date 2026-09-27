@@ -1,4 +1,4 @@
-/** The person a captured message is about, extracted by Grok. Every field may be missing. */
+/** The person a captured message is about, extracted by Groq. Every field may be missing. */
 export interface MessageContact {
   /** Work email only — personal mailboxes are dropped. */
   email: string | null;

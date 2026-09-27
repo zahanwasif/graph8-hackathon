@@ -183,7 +183,7 @@ export async function ingestSlackEvent(envelope: SlackEventEnvelope): Promise<vo
   // Acknowledge inside this capture's own thread. Non-fatal if it fails (e.g. bot not in channel).
   await safePost(thread, '⏳ Debriefing…', captureId);
 
-  // Contact fields (email, name, title, company) via Grok — for every capture with text, whether
+  // Contact fields (email, name, title, company) via Groq — for every capture with text, whether
   // or not the Event has a graph8 skill. Never throws.
   await enrichCaptureContact(captureId);
 
@@ -193,8 +193,8 @@ export async function ingestSlackEvent(envelope: SlackEventEnvelope): Promise<vo
 }
 
 /**
- * Pulls the contact out of the capture's text with Grok and stores it on the capture. Best
- * effort: a missing key or an xAI error is logged, never fatal to the capture.
+ * Pulls the contact out of the capture's text with Groq and stores it on the capture. Best
+ * effort: a missing key or a Groq error is logged, never fatal to the capture.
  */
 export async function enrichCaptureContact(captureId: string): Promise<void> {
   const capture = await db().capture.findUnique({
@@ -278,7 +278,7 @@ export async function runExtraction(captureId: string, thread: ThreadContext): P
     where: { id: captureId },
     data: {
       // Display cache — the graph8 contact + criteria_score field are the source of truth.
-      // graph8's values win; fall back to what Grok found (enrichCaptureContact) when it has none.
+      // graph8's values win; fall back to what Groq found (enrichCaptureContact) when it has none.
       personName: extraction.person?.fullName ?? capture.personName,
       personTitle: extraction.person?.title ?? capture.personTitle,
       personCompany: extraction.person?.company ?? capture.personCompany,
@@ -305,7 +305,7 @@ async function recordLeadInGraph8(
   event: { graph8ListId: string | null },
   extraction: CaptureExtraction,
   fitScore: number | null,
-  /** Work email Grok found in the message, used when graph8's extraction has none. */
+  /** Work email Groq found in the message, used when graph8's extraction has none. */
   fallbackEmail: string | null = null,
 ): Promise<{ contactId: string | null; status: 'EXTRACTED' | 'RECORDED' }> {
   const email = extraction.person?.email ?? fallbackEmail;

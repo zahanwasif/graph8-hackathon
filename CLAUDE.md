@@ -72,9 +72,9 @@ npm run theme:check      # WCAG contrast assertions for the palette
   tagged messages in the thread append) under an `Event` per channel, which carries `workspaceId`.
   Shown at `/messages` (`GET /api/workspaces/[id]/messages`). Admins edit tags in the Slack
   settings panel (`PUT .../integrations/slack/tags`).
-- **Contact extraction (Grok):** after a capture is saved, `enrichCaptureContact`
-  (`src/server/capture/service.ts`) sends its `rawText` to xAI (`src/server/llm/xai.ts`, model
-  `XAI_MODEL` or `grok-4.20-non-reasoning`, JSON-schema structured output) via `extractContact`
+- **Contact extraction (Groq):** after a capture is saved, `enrichCaptureContact`
+  (`src/server/capture/service.ts`) sends its `rawText` to Groq (`src/server/llm/groq.ts`, model
+  `GROQ_MODEL` or `openai/gpt-oss-20b`, JSON mode + zod validation) via `extractContact`
   (`src/server/capture/contact.ts`) and stores `personEmail` (work emails only),
   `personFirstName`, `personLastName`, `personTitle`, `personCompany`, `personName`. Best effort —
   failures are logged, never fatal. graph8 extraction, when configured, overrides non-null fields.
@@ -105,5 +105,5 @@ npm run theme:check      # WCAG contrast assertions for the palette
 
 See `.env.example`. Required: Clerk keys (with **Organizations enabled** in the Clerk dashboard),
 `DATABASE_URL` (pooled) + `DIRECT_URL` (unpooled, for migrations), `SLACK_CLIENT_ID`,
-`SLACK_CLIENT_SECRET`, `SLACK_SIGNING_SECRET`, `DEEPGRAM_API_KEY`, `XAI_API_KEY`, `CREDENTIALS_ENCRYPTION_KEY` (`openssl rand -base64 32`),
+`SLACK_CLIENT_SECRET`, `SLACK_SIGNING_SECRET`, `DEEPGRAM_API_KEY`, `GROQ_API_KEY`, `CREDENTIALS_ENCRYPTION_KEY` (`openssl rand -base64 32`),
 `NEXT_PUBLIC_APP_URL`. The same variables must be set in Vercel.
