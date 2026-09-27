@@ -2,7 +2,7 @@ import 'server-only';
 
 import { graph8 } from './client';
 import { extractLead, type CaptureExtraction } from './extract';
-import type { EnrichedContact } from '@/lib/types/capture';
+import type { EnrichedContact, EnrichmentStatus } from '@/lib/types/capture';
 
 /**
  * The Graph8 glue: a small, typed facade over the graph8 SDK for the two flows
@@ -205,24 +205,130 @@ export async function scoreLead(input: ScoreLeadInput): Promise<ScoreLeadResult>
   };
 }
 
+/** graph8's contact read nests the company; the flat company_* fields are usually empty. */
+type ContactRecord = Awaited<ReturnType<ReturnType<typeof graph8>['contacts']['get']>> & {
+  company?: { name?: string | null; domain?: string | null } | null;
+};
+
+function toSnapshot(c: ContactRecord): EnrichedContact {
+  return {
+    email: c.work_email,
+    linkedinUrl: c.linkedin_url,
+    directPhone: c.direct_phone,
+    mobilePhone: c.mobile_phone,
+    seniority: c.seniority_level,
+    companyName: c.company?.name ?? c.company_name,
+    companyDomain: c.company?.domain ?? c.company_domain,
+    city: c.city,
+    state: c.state,
+    country: c.country,
+  };
+}
+
 /** Snapshot a graph8 contact's (enriched) standard fields for display. Best-effort → null on error. */
 export async function getContactSnapshot(contactId: string): Promise<EnrichedContact | null> {
   try {
-    const c = await graph8().contacts.get(Number(contactId));
-    return {
-      linkedinUrl: c.linkedin_url,
-      directPhone: c.direct_phone,
-      mobilePhone: c.mobile_phone,
-      seniority: c.seniority_level,
-      companyName: c.company_name,
-      companyDomain: c.company_domain,
-      city: c.city,
-      state: c.state,
-      country: c.country,
-    };
+    return toSnapshot((await graph8().contacts.get(Number(contactId))) as ContactRecord);
   } catch (error) {
     console.error('getContactSnapshot failed', error);
     return null;
+  }
+}
+
+const str = (value: unknown): string | null =>
+  typeof value === 'string' && value.trim() ? value.trim() : null;
+
+/**
+ * Find the contact's work email (+ LinkedIn, phone, location) with graph8's person lookup and
+ * write what's found back to the graph8 contact. The intake workflow's own enrich_contact node
+ * tries no providers for API-created workflows (`providers_tried: 0`), so the app does it here.
+ *
+ * The lookup needs a LinkedIn URL, or first name + last name + company domain — otherwise the
+ * lead is `skipped` with the reason. ⚠️ Costs 1 graph8 credit per lookup; callers must make sure
+ * it runs once per lead. Never throws — the outcome is in `enrichment`.
+ */
+export async function enrichContactPerson(contactId: string): Promise<EnrichedContact | null> {
+  let contact: ContactRecord;
+  try {
+    contact = (await graph8().contacts.get(Number(contactId))) as ContactRecord;
+  } catch (error) {
+    console.error('enrichContactPerson: contact read failed', error);
+    return null;
+  }
+  const snapshot = toSnapshot(contact);
+  const done = (status: EnrichmentStatus, reason: string | null = null): EnrichedContact => ({
+    ...snapshot,
+    enrichment: { status, reason, checkedAt: new Date().toISOString() },
+  });
+
+  if (snapshot.email) return done('found');
+
+  const firstName = str(contact.first_name);
+  const lastName = str(contact.last_name);
+  // Older contacts carry a company NAME in the domain slot; resolve either to a real domain.
+  const domain = await resolveCompanyDomain(snapshot.companyDomain ?? snapshot.companyName);
+  const linkedinUrl = snapshot.linkedinUrl ?? null;
+  if (!linkedinUrl && !(firstName && lastName && domain)) {
+    const missing = [
+      !firstName || !lastName ? 'a full name (first + last)' : null,
+      !domain ? 'a company domain' : null,
+    ].filter(Boolean);
+    return done('skipped', `Needs ${missing.join(' and ')} to look up an email.`);
+  }
+
+  try {
+    const result = await graph8().enrich.person(
+      linkedinUrl
+        ? { linkedin_url: linkedinUrl }
+        : { first_name: firstName!, last_name: lastName!, company_domain: domain! },
+    );
+    if (!result.found) return done('not_found', 'No match in graph8 for this person.');
+
+    const d = result.data ?? {};
+    const found = {
+      work_email: str(d.work_email) ?? str(d.email),
+      linkedin_url: str(d.linkedin_url),
+      mobile_phone: str(d.mobile_phone),
+      direct_phone: str(d.direct_phone) ?? str(d.phone),
+      city: str(d.city),
+      state: str(d.state),
+      country: str(d.country),
+    };
+    // Only fill what the contact is missing.
+    const updates = Object.fromEntries(
+      Object.entries(found).filter(([key, value]) => value && !contact[key as keyof ContactRecord]),
+    ) as Record<string, string>;
+    if (Object.keys(updates).length) {
+      try {
+        await graph8().contacts.update(Number(contactId), updates);
+      } catch (error) {
+        console.error('enrichContactPerson: contact update failed', error);
+      }
+    }
+
+    const merged: EnrichedContact = {
+      ...snapshot,
+      email: snapshot.email ?? found.work_email,
+      linkedinUrl: snapshot.linkedinUrl ?? found.linkedin_url,
+      mobilePhone: snapshot.mobilePhone ?? found.mobile_phone,
+      directPhone: snapshot.directPhone ?? found.direct_phone,
+      seniority: snapshot.seniority ?? str(d.seniority_level),
+      companyDomain: domain ?? snapshot.companyDomain,
+      city: snapshot.city ?? found.city,
+      state: snapshot.state ?? found.state,
+      country: snapshot.country ?? found.country,
+    };
+    return {
+      ...merged,
+      enrichment: {
+        status: merged.email ? 'found' : 'not_found',
+        reason: merged.email ? null : 'Person matched, but no work email is on record.',
+        checkedAt: new Date().toISOString(),
+      },
+    };
+  } catch (error) {
+    console.error('enrichContactPerson: lookup failed', error);
+    return done('failed', error instanceof Error ? error.message.slice(0, 200) : 'Lookup failed.');
   }
 }
 
@@ -278,10 +384,97 @@ export interface IntakeLead {
   first_name?: string;
   last_name?: string;
   company_domain?: string;
+  /** Company name as written (e.g. in the Slack note) — kept on the contact alongside the domain. */
+  company_name?: string;
   job_title?: string;
   /** Pre-composed lead description for the scorer — Graph8 only interpolates single `${ref}`s,
    *  so the score node reads `${trigger.lead_text}` rather than a composite template. */
   lead_text?: string;
+}
+
+/**
+ * The intake workflow's enrich step. Without `provider_sequence` graph8 tries no provider at all
+ * (`providers_tried: 0`) and every field comes back empty. All four providers are graph8-funded:
+ * no org keys needed, but each lookup CHARGES graph8 credits per contact. Email finders need the
+ * contact's name + company domain (see `resolveCompanyDomain`).
+ */
+const INTAKE_ENRICH_CONFIG = {
+  fields: ['CONTACT_WORK_EMAIL', 'CONTACT_LINKEDIN_URL', 'CONTACT_MOBILE_PHONE'],
+  provider_sequence: ['graph8', 'prospeo', 'hunter', 'leadmagic'],
+};
+
+const DOMAIN_RE = /^(?:https?:\/\/)?(?:www\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)\/?$/i;
+const normalizeCompany = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/**
+ * Company name → website domain, so email finders have something to search. A value that is
+ * already a domain is returned as-is; otherwise graph8's open-data company search is queried by
+ * name and only an exact (normalized) name match with a domain is accepted — no guessing.
+ * Best-effort: null on no match or error.
+ */
+export async function resolveCompanyDomain(company: string | null | undefined): Promise<string | null> {
+  const value = company?.trim();
+  if (!value) return null;
+  const asDomain = DOMAIN_RE.exec(value);
+  if (asDomain) return asDomain[1].toLowerCase();
+
+  try {
+    const { data } = await graph8().search.companies({
+      filters: [{ field: 'name', operator: 'contains', value: [value] }],
+      limit: 10,
+    });
+    const wanted = normalizeCompany(value);
+    const match = data.find((c) => c.domain && c.name && normalizeCompany(c.name) === wanted);
+    return match?.domain?.toLowerCase() ?? null;
+  } catch (error) {
+    console.error('resolveCompanyDomain failed', error);
+    return null;
+  }
+}
+
+/** Workflow ids already brought up to date in this server process — checked once each. */
+const upgradedIntakeWorkflows = new Set<string>();
+
+/**
+ * Bring an existing intake workflow up to the current enrich step (work email + provider
+ * waterfall) and pass the company name to create_contact. Patches only those two nodes in place,
+ * so any other edits made to the workflow in graph8 are kept. Best-effort; never throws.
+ */
+export async function ensureIntakeWorkflowUpToDate(workflowId: string): Promise<void> {
+  if (upgradedIntakeWorkflows.has(workflowId)) return;
+  try {
+    const res = (await graph8().workflows.get(workflowId)) as unknown as {
+      action?: { skill_config?: { nodes?: Array<{ node_type?: string; config?: Record<string, unknown> }> } };
+    };
+    const config = res.action?.skill_config;
+    const nodes = config?.nodes ?? [];
+    const enrich = nodes.find((n) => n.node_type === 'enrich_contact');
+    const create = nodes.find((n) => n.node_type === 'create_contact');
+    const trigger = nodes.find((n) => n.node_type === 'trigger');
+
+    const enrichOk =
+      !enrich ||
+      (Array.isArray(enrich.config?.provider_sequence) &&
+        (enrich.config?.fields as string[] | undefined)?.includes('CONTACT_WORK_EMAIL'));
+    const createOk = !create || create.config?.company_name != null;
+    if (enrichOk && createOk) {
+      upgradedIntakeWorkflows.add(workflowId);
+      return;
+    }
+
+    if (enrich) enrich.config = { ...enrich.config, ...INTAKE_ENRICH_CONFIG };
+    if (create) create.config = { ...create.config, company_name: '${trigger.company_name}' };
+    const formFields = trigger?.config?.form_fields;
+    if (trigger && Array.isArray(formFields) && !formFields.includes('company_name')) {
+      trigger.config = { ...trigger.config, form_fields: [...formFields, 'company_name'] };
+    }
+
+    await graph8().workflows.update(workflowId, { config: config as never });
+    upgradedIntakeWorkflows.add(workflowId);
+    console.log('[graph8] intake workflow upgraded (work email + provider waterfall)', { workflowId });
+  } catch (error) {
+    console.error(`[graph8] intake workflow ${workflowId} upgrade failed`, error);
+  }
 }
 
 /** Compose the single-string lead description the score node scores against. */
@@ -317,7 +510,15 @@ function buildIntakeWorkflowConfig(input: IntakeWorkflowInput): Record<string, u
         name: 'Form submitted',
         config: {
           trigger_type: 'new_form_submitted',
-          form_fields: ['email', 'first_name', 'last_name', 'company_domain', 'job_title', 'lead_text'],
+          form_fields: [
+            'email',
+            'first_name',
+            'last_name',
+            'company_domain',
+            'company_name',
+            'job_title',
+            'lead_text',
+          ],
         },
         position: { x: 0, y: 0 },
         connections: ['create_contact-1'],
@@ -332,6 +533,7 @@ function buildIntakeWorkflowConfig(input: IntakeWorkflowInput): Record<string, u
           last_name: '${trigger.last_name}',
           job_title: '${trigger.job_title}',
           company_domain: '${trigger.company_domain}',
+          company_name: '${trigger.company_name}',
           list_id: listId,
         },
         position: { x: 250, y: 0 },
@@ -343,8 +545,7 @@ function buildIntakeWorkflowConfig(input: IntakeWorkflowInput): Record<string, u
         name: 'Enrich contact',
         config: {
           contact_id: '${create_contact-1.contact_id}',
-          // enrich_contact requires ≥1 field or it fails validation and halts the run.
-          fields: ['CONTACT_LINKEDIN_URL', 'CONTACT_MOBILE_PHONE'],
+          ...INTAKE_ENRICH_CONFIG,
           input_mappings: [
             { target_field: 'contact_id', source_expression: '${create_contact-1.contact_id}' },
           ],

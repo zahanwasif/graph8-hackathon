@@ -7,12 +7,14 @@ import {
   createEventSequence,
   createIntakeWorkflow,
   createSchedule,
+  ensureIntakeWorkflowUpToDate,
   executeIntakeWorkflow,
   getSequenceProgress,
   launchCampaign,
   listMailboxes,
   listSchedules,
   provisionEvent,
+  resolveCompanyDomain,
   runSequence,
   setSequenceSchedule,
   updateSchedule,
@@ -288,18 +290,27 @@ export async function startIntakeLead(params: {
     select: { id: true },
   });
 
+  // `companyDomain` carries whatever the user/Slack note gave — usually a company NAME. Email
+  // finders need the real domain, so look it up; keep the name on the contact either way.
+  const company = lead.companyDomain || '';
+  const [, companyDomain] = await Promise.all([
+    ensureIntakeWorkflowUpToDate(event.graph8IntakeWorkflowId),
+    resolveCompanyDomain(company),
+  ]);
+
   const payload: IntakeLead = {
     ...(lead.email ? { email: lead.email } : {}),
     ...(lead.firstName ? { first_name: lead.firstName } : {}),
     ...(lead.lastName ? { last_name: lead.lastName } : {}),
-    ...(lead.companyDomain ? { company_domain: lead.companyDomain } : {}),
+    ...(companyDomain ? { company_domain: companyDomain } : {}),
+    ...(company ? { company_name: company } : {}),
     ...(lead.jobTitle ? { job_title: lead.jobTitle } : {}),
     lead_text: [
       composeLeadText({
         first_name: lead.firstName,
         last_name: lead.lastName,
         job_title: lead.jobTitle,
-        company_domain: lead.companyDomain,
+        company_domain: companyDomain ? `${company} (${companyDomain})` : company,
         email: lead.email,
       }),
       notes?.trim() ? `Notes: ${notes.trim()}` : null,

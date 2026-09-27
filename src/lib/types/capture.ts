@@ -35,7 +35,21 @@ export interface EventListItem {
 }
 
 /** Enriched contact fields snapshotted from graph8 when the intake run completes. */
+/** Where a lead's email lookup stands. `running` = claimed by a request, not finished yet. */
+export type EnrichmentStatus = 'running' | 'found' | 'not_found' | 'skipped' | 'failed';
+
+export interface EnrichmentOutcome {
+  status: EnrichmentStatus;
+  /** Why it was skipped / not found / failed — shown on the lead. */
+  reason: string | null;
+  checkedAt: string;
+}
+
 export interface EnrichedContact {
+  /** Outcome of the email lookup; absent on leads enriched before it existed. */
+  enrichment?: EnrichmentOutcome;
+  /** Work email — found by enrichment, or the one the lead was submitted with. */
+  email?: string | null;
   linkedinUrl?: string | null;
   directPhone?: string | null;
   mobilePhone?: string | null;
