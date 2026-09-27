@@ -31,22 +31,67 @@ model Event {
   targetProfile String?
 
   // --- graph8 pointers (the content + steps live in graph8) ---
-  graph8CampaignId     String? // THE backbone: name/goal/target_persona/audience/cadence live here
-  graph8PersonaId      String? // studio persona (target profile / ICP)
-  graph8ExtractSkillId String? // LLM skill: transcript -> structured lead + disposition
-  graph8DraftSkillId   String? // LLM skill: draft the follow-up
-  graph8PipelineId     String? // deal pipeline (stages)
-  graph8ListId         String? // audience list for this event
-  graph8SequenceId     String? // cadence sequence (created when the campaign is launched)
-  graph8HotWorkflowId  String? // hot-lead workflow (alerts, delay, voice call)
+  graph8CampaignId       String? // THE backbone: name/goal/target_persona/audience/cadence live here
+  graph8PersonaId        String? // studio persona (target profile / ICP)
+  graph8ExtractSkillId   String? // LLM skill: transcript -> structured lead + disposition
+  graph8DraftSkillId     String? // LLM skill: draft the follow-up
+  graph8PipelineId       String? // deal pipeline (stages)
+  graph8ListId           String? // audience list for this event
+  graph8SequenceId       String? // cadence sequence (created when the campaign is launched)
+  graph8IntakeWorkflowId String? // form-intake workflow: create contact → enrich → score → add to list
+  graph8HotWorkflowId    String? // hot-lead workflow (alerts, delay, voice call)
 
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   captures Capture[]
+  leads    Lead[]
 
   @@index([workspaceId])
+}
+
+/// One lead added through the graph8 intake workflow (the "Add lead" button / a form). graph8 is
+/// the source of truth for the contact + its criteria_score; this row tracks the *pipeline status*
+/// graph8's list can't express (processing/failed) and caches the person + score for the Leads tab.
+model Lead {
+  id          String  @id @default(cuid())
+  eventId     String
+  event       Event   @relation(fields: [eventId], references: [id])
+  workspaceId String?
+
+  // Submitted lead fields (also the display cache for name/company/title).
+  email   String?
+  name    String?
+  title   String?
+  company String?
+
+  // graph8 pointers + async run tracking.
+  graph8ContactId   String?
+  graph8ExecutionId String?
+
+  status      LeadStatus @default(PROCESSING)
+  fitScore    Int? // mirror of the graph8 criteria_score field
+  disposition String?
+  error       String?
+
+  /// Snapshot of the graph8 contact's enriched fields (LinkedIn, phone, seniority, company,
+  /// location…), captured once when the run completes. Shape: `EnrichedContact` in lib/types.
+  enriched Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([eventId])
+  @@index([workspaceId])
+}
+
+/// Pipeline status of a lead's intake run — graph8's list only holds finished contacts, so
+/// processing/failed states live here.
+enum LeadStatus {
+  PROCESSING
+  COMPLETED
+  FAILED
 }
 
 /// One captured conversation = one Slack thread. This is the Slack-ingestion +
@@ -74,7 +119,7 @@ model Capture {
   slackFileId      String?
   mediaMimeType    String?
   mediaDurationSec Float?
-  extraction Json? // structured output from the graph8 extract skill
+  extraction       Json? // structured output from the graph8 extract skill
 
   status CaptureStatus @default(RECEIVED)
 

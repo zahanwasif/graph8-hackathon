@@ -2,9 +2,16 @@ import 'server-only';
 
 import { db } from '@/server/db';
 import { graph8, isGraph8Configured } from '@/server/graph8/client';
-import { provisionEvent } from '@/server/graph8/glue';
+import {
+  composeLeadText,
+  createIntakeWorkflow,
+  executeIntakeWorkflow,
+  launchCampaign,
+  provisionEvent,
+  type IntakeLead,
+} from '@/server/graph8/glue';
 import { badRequest, HttpError, notFound } from '@/server/http';
-import type { CreateEventInput } from '@/server/events/schemas';
+import type { AddLeadInput, CreateEventInput } from '@/server/events/schemas';
 
 /** Match events for this workspace, plus seeded/unassigned ones. Mirrors `capture/read.ts`. */
 const workspaceScope = (workspaceId: string) => ({ OR: [{ workspaceId }, { workspaceId: null }] });
@@ -75,37 +82,167 @@ export async function createEvent(input: CreateEventInput & { workspaceId: strin
     throw new HttpError(503, 'graph8 is not configured (GRAPH8_API_KEY is missing).');
   }
 
-  // A channel can back only one event (Capture routing is by channel).
-  const existing = await db().event.findUnique({ where: { slackChannelId } });
-  if (existing) {
-    throw badRequest('That Slack channel is already bound to an event.');
+  const { extractSkillId, draftSkillId } = await findSharedSkillIds();
+
+  // Create the local row FIRST, reserving the channel, so a DB failure can NEVER orphan graph8
+  // objects — nothing is provisioned in graph8 until the row exists. The unique constraint on
+  // slackChannelId settles the race atomically (no read-then-write gap), and graph8 has no
+  // campaign-delete API, so a post-hoc rollback couldn't fully clean up anyway.
+  let event: { id: string; name: string };
+  try {
+    event = await db().event.create({
+      data: {
+        // Display / scorer cache — graph8 campaign + persona are the source of truth.
+        name,
+        goal: goal || null,
+        targetProfile: targetProfile || null,
+        workspaceId,
+        slackChannelId,
+        // Shared skill pointers already exist in graph8 — safe to store before provisioning.
+        graph8ExtractSkillId: extractSkillId,
+        graph8DraftSkillId: draftSkillId,
+      },
+      select: { id: true, name: true },
+    });
+  } catch (error) {
+    // Unique violation on slackChannelId (P2002) → the channel is already bound.
+    if ((error as { code?: string }).code === 'P2002') {
+      throw badRequest('That Slack channel is already bound to an event.');
+    }
+    throw error;
   }
 
-  const { extractSkillId, draftSkillId } = await findSharedSkillIds();
+  // Now provision graph8 (best-effort) and backfill the pointers onto the row we just created.
   const { graph8PersonaId, graph8ListId, graph8CampaignId } = await provisionGraph8(
     name,
     goal,
     targetProfile,
   );
+  const graph8IntakeWorkflowId = graph8ListId
+    ? await buildIntakeWorkflow({
+        eventName: name,
+        eventGoal: goal,
+        targetProfile,
+        listId: graph8ListId,
+        scoreSkillId: extractSkillId,
+      })
+    : null;
 
-  const event = await db().event.create({
-    data: {
-      // Display / scorer cache — graph8 campaign + persona are the source of truth.
-      name,
-      goal: goal || null,
-      targetProfile: targetProfile || null,
-      workspaceId,
-      slackChannelId,
-      // graph8 pointers.
-      graph8ExtractSkillId: extractSkillId,
-      graph8DraftSkillId: draftSkillId,
-      graph8PersonaId,
-      graph8ListId,
-      graph8CampaignId,
-    },
+  await db().event.update({
+    where: { id: event.id },
+    data: { graph8PersonaId, graph8ListId, graph8CampaignId, graph8IntakeWorkflowId },
   });
 
   return { id: event.id, name: event.name };
+}
+
+/** Build the per-event intake workflow in graph8. Best-effort: a failure leaves the pointer null. */
+async function buildIntakeWorkflow(input: {
+  eventName: string;
+  eventGoal: string;
+  targetProfile: string;
+  listId: string;
+  scoreSkillId: string;
+}): Promise<string | null> {
+  try {
+    return await createIntakeWorkflow(input);
+  } catch (error) {
+    console.error('event bootstrap: intake workflow create failed', error);
+    return null;
+  }
+}
+
+/**
+ * Run the event's graph8 intake workflow for one manually-entered lead (the "Add lead"
+ * button — works even when Slack is down). graph8 does create → enrich → score → add-to-list.
+ */
+export interface AddLeadResult {
+  leadId: string;
+  status: 'PROCESSING' | 'FAILED';
+  error: string | null;
+}
+
+/**
+ * Add a lead: record it locally as PROCESSING, then kick off the event's graph8 intake workflow
+ * (graph8 runs create → enrich → score → add-to-list on its side). Returns immediately; the Leads
+ * tab finalizes the row (COMPLETED + score, or FAILED) on read via `listEventLeads`.
+ */
+export async function addLeadToEvent(
+  workspaceId: string,
+  eventId: string,
+  lead: AddLeadInput,
+): Promise<AddLeadResult> {
+  const event = await db().event.findFirst({
+    where: { id: eventId, ...workspaceScope(workspaceId) },
+    select: { graph8IntakeWorkflowId: true },
+  });
+  if (!event) throw notFound('Event not found');
+  if (!event.graph8IntakeWorkflowId) {
+    throw badRequest('This event has no intake workflow in graph8 yet.');
+  }
+
+  const name = [lead.firstName, lead.lastName].filter(Boolean).join(' ') || null;
+  const row = await db().lead.create({
+    data: {
+      event: { connect: { id: eventId } },
+      workspaceId,
+      email: lead.email || null,
+      name,
+      title: lead.jobTitle || null,
+      company: lead.company || null,
+      status: 'PROCESSING',
+    },
+    select: { id: true },
+  });
+
+  const payload: IntakeLead = {
+    ...(lead.email ? { email: lead.email } : {}),
+    ...(lead.firstName ? { first_name: lead.firstName } : {}),
+    ...(lead.lastName ? { last_name: lead.lastName } : {}),
+    ...(lead.company ? { company: lead.company } : {}),
+    ...(lead.jobTitle ? { job_title: lead.jobTitle } : {}),
+    lead_text: composeLeadText({
+      first_name: lead.firstName,
+      last_name: lead.lastName,
+      job_title: lead.jobTitle,
+      company: lead.company,
+      email: lead.email,
+    }),
+  };
+
+  try {
+    const { executionId } = await executeIntakeWorkflow(event.graph8IntakeWorkflowId, payload);
+    await db().lead.update({ where: { id: row.id }, data: { graph8ExecutionId: executionId } });
+    return { leadId: row.id, status: 'PROCESSING', error: null };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to start the intake workflow';
+    await db().lead.update({ where: { id: row.id }, data: { status: 'FAILED', error: message } });
+    return { leadId: row.id, status: 'FAILED', error: message };
+  }
+}
+
+/**
+ * Launch the event's graph8 campaign — starts real outreach. Caller enforces admin +
+ * the UI confirms first. Persists the resulting sequence id for enrollment/reads.
+ */
+export async function launchEvent(
+  workspaceId: string,
+  eventId: string,
+): Promise<{ sequenceId: string | null }> {
+  const event = await db().event.findFirst({
+    where: { id: eventId, ...workspaceScope(workspaceId) },
+    select: { id: true, graph8CampaignId: true },
+  });
+  if (!event) throw notFound('Event not found');
+  if (!event.graph8CampaignId) {
+    throw badRequest('This event has no graph8 campaign to launch.');
+  }
+
+  const { sequenceId } = await launchCampaign(event.graph8CampaignId);
+  if (sequenceId) {
+    await db().event.update({ where: { id: event.id }, data: { graph8SequenceId: sequenceId } });
+  }
+  return { sequenceId };
 }
 
 /**

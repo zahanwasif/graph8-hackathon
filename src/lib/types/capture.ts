@@ -30,6 +30,36 @@ export interface EventListItem {
   captureCount: number;
 }
 
+/** Enriched contact fields snapshotted from graph8 when the intake run completes. */
+export interface EnrichedContact {
+  linkedinUrl?: string | null;
+  directPhone?: string | null;
+  mobilePhone?: string | null;
+  seniority?: string | null;
+  companyName?: string | null;
+  companyDomain?: string | null;
+  city?: string | null;
+  state?: string | null;
+  country?: string | null;
+}
+
+/** A lead in the Leads tab — an intake run with its pipeline status + cached score. */
+export interface LeadListItem {
+  id: string;
+  name: string | null;
+  email: string | null;
+  title: string | null;
+  company: string | null;
+  /** Pipeline status of the intake run. */
+  status: 'PROCESSING' | 'COMPLETED' | 'FAILED';
+  fitScore: number | null;
+  disposition: string | null;
+  error: string | null;
+  /** graph8 contact's enriched fields, once the run completes. */
+  enriched: EnrichedContact | null;
+  createdAt: string;
+}
+
 /** An event with its captures, for the event detail page. */
 export interface EventWithCaptures {
   id: string;
@@ -39,6 +69,8 @@ export interface EventWithCaptures {
   isActive: boolean;
   /** Owning workspace (Clerk org id); null for seeded/unassigned events. */
   workspaceId: string | null;
+  /** Present once graph8 provisioning succeeded; gates the "Launch event" action. */
+  graph8CampaignId: string | null;
   captureCount: number;
   captures: CaptureListItem[];
 }

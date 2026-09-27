@@ -1,5 +1,5 @@
 import { apiFetch } from '@/lib/api';
-import type { EventListItem, EventWithCaptures } from '@/lib/types/capture';
+import type { EventListItem, EventWithCaptures, LeadListItem } from '@/lib/types/capture';
 
 /** Events (with capture counts) for a workspace. */
 export async function getWorkspaceEvents(workspaceId: string): Promise<EventListItem[]> {
@@ -42,4 +42,49 @@ export function deleteEvent(workspaceId: string, eventId: string): Promise<void>
   return apiFetch<void>(`/workspaces/${workspaceId}/events/${eventId}`, {
     method: 'DELETE',
   });
+}
+
+export interface AddLeadBody {
+  email?: string;
+  firstName?: string;
+  lastName?: string;
+  companyDomain?: string;
+  jobTitle?: string;
+}
+
+export interface AddLeadResult {
+  leadId: string;
+  status: 'PROCESSING' | 'FAILED';
+  error: string | null;
+}
+
+/** Add a lead — runs the event's graph8 intake workflow (create → enrich → score → list). */
+export async function addLead(
+  workspaceId: string,
+  eventId: string,
+  body: AddLeadBody,
+): Promise<AddLeadResult> {
+  return apiFetch<AddLeadResult>(`/workspaces/${workspaceId}/events/${eventId}/leads`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+/** Leads read straight from the event's graph8 list (the Leads tab). */
+export async function getEventLeads(workspaceId: string, eventId: string): Promise<LeadListItem[]> {
+  const { leads } = await apiFetch<{ leads: LeadListItem[] }>(
+    `/workspaces/${workspaceId}/events/${eventId}/leads`,
+  );
+  return leads;
+}
+
+/** Launch the event's graph8 campaign (starts real outreach). Admin-only. */
+export async function launchEvent(
+  workspaceId: string,
+  eventId: string,
+): Promise<{ sequenceId: string | null }> {
+  return apiFetch<{ sequenceId: string | null }>(
+    `/workspaces/${workspaceId}/events/${eventId}/launch`,
+    { method: 'POST' },
+  );
 }

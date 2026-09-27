@@ -77,6 +77,7 @@ export async function getWorkspaceEvent(
     slackChannelId: event.slackChannelId,
     isActive: event.isActive,
     workspaceId: event.workspaceId,
+    graph8CampaignId: event.graph8CampaignId,
     captureCount: event.captures.length,
     captures: event.captures.map(toCaptureItem),
   };

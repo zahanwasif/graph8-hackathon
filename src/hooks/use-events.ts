@@ -4,19 +4,25 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useOrganization } from '@clerk/nextjs';
 
 import {
+  addLead,
   createEvent,
   deleteEvent,
+  getEventLeads,
   getWorkspaceEvent,
   getWorkspaceEvents,
+  launchEvent,
+  type AddLeadBody,
   type CreateEventBody,
 } from '@/lib/api/events';
-import type { EventListItem, EventWithCaptures } from '@/lib/types/capture';
+import type { EventListItem, EventWithCaptures, LeadListItem } from '@/lib/types/capture';
 
 export const eventKeys = {
   all: ['events'] as const,
   list: (workspaceId: string) => [...eventKeys.all, 'list', workspaceId] as const,
   detail: (workspaceId: string, eventId: string) =>
     [...eventKeys.all, 'detail', workspaceId, eventId] as const,
+  leads: (workspaceId: string, eventId: string) =>
+    [...eventKeys.all, 'leads', workspaceId, eventId] as const,
 };
 
 /** Events for the active workspace. */
@@ -58,6 +64,57 @@ export function useCreateEvent() {
     onSuccess: () => {
       if (!workspaceId) return;
       queryClient.invalidateQueries({ queryKey: eventKeys.list(workspaceId) });
+    },
+  });
+}
+
+/** Leads read straight from the event's graph8 list. Enabled only when the Leads tab is active. */
+export function useEventLeads(eventId: string, enabled: boolean) {
+  const { organization, isLoaded } = useOrganization();
+  const workspaceId = organization?.id;
+
+  return useQuery({
+    queryKey: eventKeys.leads(workspaceId!, eventId),
+    queryFn: (): Promise<LeadListItem[]> => getEventLeads(workspaceId!, eventId),
+    enabled: isLoaded && !!workspaceId && enabled,
+    // Poll briskly so a PROCESSING lead flips to COMPLETED/FAILED shortly after it settles.
+    refetchInterval: 4 * 1000,
+  });
+}
+
+/** Add a lead to an event (runs the graph8 intake workflow), then refresh captures and leads. */
+export function useAddLead(eventId: string) {
+  const { organization } = useOrganization();
+  const workspaceId = organization?.id;
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (body: AddLeadBody) => {
+      if (!workspaceId) throw new Error('No workspace selected');
+      return addLead(workspaceId, eventId, body);
+    },
+    onSuccess: () => {
+      if (!workspaceId) return;
+      queryClient.invalidateQueries({ queryKey: eventKeys.detail(workspaceId, eventId) });
+      queryClient.invalidateQueries({ queryKey: eventKeys.leads(workspaceId, eventId) });
+    },
+  });
+}
+
+/** Launch an event's graph8 campaign (admin-only; starts real outreach). */
+export function useLaunchEvent(eventId: string) {
+  const { organization } = useOrganization();
+  const workspaceId = organization?.id;
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => {
+      if (!workspaceId) throw new Error('No workspace selected');
+      return launchEvent(workspaceId, eventId);
+    },
+    onSuccess: () => {
+      if (!workspaceId) return;
+      queryClient.invalidateQueries({ queryKey: eventKeys.detail(workspaceId, eventId) });
     },
   });
 }
