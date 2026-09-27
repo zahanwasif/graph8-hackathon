@@ -13,6 +13,9 @@ import {
 } from '@/server/slack/service';
 import { DEFAULT_CAPTURE_TAGS, matchSpokenTag, matchTextTag } from '@/server/slack/tags';
 import { ensureCriteriaScoreField, setCriteriaScore, upsertContact } from '@/server/graph8/glue';
+import { addLeadSchema } from '@/server/events/schemas';
+import { ensureEventProvisioned, startIntakeLead } from '@/server/events/service';
+import { HttpError, notFound } from '@/server/http';
 import type { SlackEventEnvelope, SlackFile, SlackMessageEvent } from '@/server/slack/events';
 
 /** Where a thread reply goes. The Events API is keyed by team, not our workspace. */
@@ -187,9 +190,128 @@ export async function ingestSlackEvent(envelope: SlackEventEnvelope): Promise<vo
   // or not the Event has a graph8 skill. Never throws.
   await enrichCaptureContact(captureId);
 
+  // Events created before graph8 provisioning existed have no skill/list/intake workflow — set
+  // them up now so extraction and the lead pipeline below can run. No-op once provisioned.
+  await ensureEventProvisioned(mappedEvent.id);
+
   // Extraction runs in the same post-response context. Text, link and (transcribed) voice
   // captures run now; images wait for vision (not yet wired) — see runExtraction.
   await runExtraction(captureId, thread);
+
+  // Send the contact through the event's graph8 intake workflow (create → enrich → score → list),
+  // same as the "Add lead" button. Runs even if extraction failed — Groq's fields are enough.
+  await queueCaptureLead(captureId, thread);
+}
+
+/**
+ * Auto-add a capture's contact to the event's lead pipeline and say so in its Slack thread.
+ * Best effort; never throws. The Leads tab settles the run's status + score on read.
+ */
+export async function queueCaptureLead(captureId: string, thread: ThreadContext): Promise<void> {
+  const outcome = await startCaptureLead(captureId);
+  if (outcome.status === 'skipped') return;
+  await safePost(
+    thread,
+    outcome.status === 'failed'
+      ? `⚠️ Couldn't add to the lead pipeline: ${outcome.error ?? 'unknown error'}`
+      : '📥 Added to the lead pipeline. Enrichment and score will show in the Leads tab.',
+    captureId,
+  );
+}
+
+export type CaptureLeadOutcome =
+  | { status: 'queued' }
+  | { status: 'failed'; error: string | null }
+  | { status: 'skipped'; reason: string };
+
+/**
+ * Start the intake workflow for one capture's contact. Skips when the event has no intake
+ * workflow, the capture already has a lead, or there's no name/email/company. Never throws.
+ */
+async function startCaptureLead(captureId: string): Promise<CaptureLeadOutcome> {
+  try {
+    const capture = await db().capture.findUnique({
+      where: { id: captureId },
+      include: { event: { select: { id: true, workspaceId: true, graph8IntakeWorkflowId: true } }, lead: true },
+    });
+    if (!capture) return { status: 'skipped', reason: 'capture not found' };
+    if (capture.lead) return { status: 'skipped', reason: 'already a lead' };
+
+    const workflowId = capture.event.graph8IntakeWorkflowId;
+    if (!workflowId) {
+      console.info(`[capture] ${captureId}: event ${capture.event.id} has no intake workflow; lead not queued`);
+      return { status: 'skipped', reason: 'event has no intake workflow' };
+    }
+
+    const [nameFirst, ...nameRest] = (capture.personName ?? '').trim().split(/\s+/);
+    const parsed = addLeadSchema.safeParse({
+      email: capture.personEmail ?? '',
+      firstName: capture.personFirstName ?? nameFirst ?? '',
+      lastName: capture.personLastName ?? nameRest.join(' '),
+      jobTitle: capture.personTitle ?? '',
+      companyDomain: capture.personCompany ?? '',
+    });
+    if (!parsed.success) {
+      console.info(`[capture] ${captureId}: no name/email/company found; lead not queued`);
+      return { status: 'skipped', reason: 'no name, email or company' };
+    }
+
+    const result = await startIntakeLead({
+      event: { id: capture.event.id, graph8IntakeWorkflowId: workflowId },
+      workspaceId: capture.event.workspaceId,
+      lead: parsed.data,
+      captureId,
+      notes: capture.rawText,
+    });
+    return result.status === 'FAILED' ? { status: 'failed', error: result.error } : { status: 'queued' };
+  } catch (error) {
+    console.error(`[capture] ${captureId}: queueing lead failed`, error);
+    return { status: 'failed', error: error instanceof Error ? error.message : null };
+  }
+}
+
+export interface ImportCaptureLeadsResult {
+  queued: number;
+  failed: number;
+  skipped: number;
+}
+
+/**
+ * The Leads tab's "Import Slack captures": send every capture of the event that isn't a lead yet
+ * through the intake workflow (provisioning the event in graph8 first if needed). No Slack posts.
+ */
+export async function importCaptureLeads(
+  workspaceId: string,
+  eventId: string,
+): Promise<ImportCaptureLeadsResult> {
+  const event = await db().event.findFirst({
+    where: { id: eventId, OR: [{ workspaceId }, { workspaceId: null }] },
+    select: { id: true },
+  });
+  if (!event) throw notFound('Event not found');
+
+  await ensureEventProvisioned(eventId);
+  const provisioned = await db().event.findUnique({
+    where: { id: eventId },
+    select: { graph8IntakeWorkflowId: true },
+  });
+  if (!provisioned?.graph8IntakeWorkflowId) {
+    throw new HttpError(503, "This event couldn't be set up in graph8, so its captures can't become leads yet.");
+  }
+
+  const captures = await db().capture.findMany({
+    where: { eventId, lead: null },
+    orderBy: { createdAt: 'asc' },
+    select: { id: true },
+  });
+
+  const result: ImportCaptureLeadsResult = { queued: 0, failed: 0, skipped: 0 };
+  // Sequential — keeps graph8 request volume gentle for a one-off backfill.
+  for (const { id } of captures) {
+    const outcome = await startCaptureLead(id);
+    result[outcome.status] += 1;
+  }
+  return result;
 }
 
 /**

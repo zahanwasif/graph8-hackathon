@@ -70,6 +70,23 @@ export async function addLead(
   });
 }
 
+export interface ImportCaptureLeadsResult {
+  queued: number;
+  failed: number;
+  skipped: number;
+}
+
+/** Send the event's Slack captures that aren't leads yet through the graph8 intake workflow. */
+export async function importCaptureLeads(
+  workspaceId: string,
+  eventId: string,
+): Promise<ImportCaptureLeadsResult> {
+  return apiFetch<ImportCaptureLeadsResult>(
+    `/workspaces/${workspaceId}/events/${eventId}/leads/import`,
+    { method: 'POST' },
+  );
+}
+
 /** Leads read straight from the event's graph8 list (the Leads tab). */
 export async function getEventLeads(workspaceId: string, eventId: string): Promise<LeadListItem[]> {
   const { leads } = await apiFetch<{ leads: LeadListItem[] }>(

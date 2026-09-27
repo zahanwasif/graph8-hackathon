@@ -60,6 +60,10 @@ model Lead {
   event       Event   @relation(fields: [eventId], references: [id])
   workspaceId String?
 
+  // Set when the lead came from a Slack capture (auto-queued); null for the manual "Add lead" button.
+  captureId String?  @unique
+  capture   Capture? @relation(fields: [captureId], references: [id])
+
   // Submitted lead fields (also the display cache for name/company/title).
   email   String?
   name    String?
@@ -148,6 +152,7 @@ model Capture {
   updatedAt DateTime @updatedAt
 
   threadState ThreadState?
+  lead        Lead?
 
   @@unique([slackChannelId, slackThreadTs])
 }

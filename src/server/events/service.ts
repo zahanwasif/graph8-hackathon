@@ -138,6 +138,61 @@ export async function createEvent(input: CreateEventInput & { workspaceId: strin
   return { id: event.id, name: event.name };
 }
 
+/**
+ * Fill in whatever graph8 setup an event is missing (skills, persona/list/campaign, intake
+ * workflow) — for events created before `createEvent` provisioned graph8, or whose provisioning
+ * failed. Only null pointers are filled; existing graph8 objects are never recreated. Best-effort:
+ * logs and returns on failure. Non-sending (nothing is launched or enrolled).
+ */
+export async function ensureEventProvisioned(eventId: string): Promise<void> {
+  const event = await db().event.findUnique({ where: { id: eventId } });
+  if (!event || !isGraph8Configured()) return;
+  if (event.graph8ExtractSkillId && event.graph8ListId && event.graph8IntakeWorkflowId) return;
+
+  try {
+    const data: {
+      graph8ExtractSkillId?: string;
+      graph8DraftSkillId?: string | null;
+      graph8PersonaId?: string | null;
+      graph8ListId?: string | null;
+      graph8CampaignId?: string | null;
+      graph8IntakeWorkflowId?: string | null;
+    } = {};
+
+    let extractSkillId = event.graph8ExtractSkillId;
+    if (!extractSkillId) {
+      const skills = await findSharedSkillIds();
+      extractSkillId = skills.extractSkillId;
+      data.graph8ExtractSkillId = skills.extractSkillId;
+      if (!event.graph8DraftSkillId) data.graph8DraftSkillId = skills.draftSkillId;
+    }
+
+    let listId = event.graph8ListId;
+    if (!listId) {
+      const provisioned = await provisionGraph8(event.name, event.goal ?? '', event.targetProfile ?? '');
+      listId = provisioned.graph8ListId;
+      data.graph8ListId = provisioned.graph8ListId;
+      if (!event.graph8PersonaId) data.graph8PersonaId = provisioned.graph8PersonaId;
+      if (!event.graph8CampaignId) data.graph8CampaignId = provisioned.graph8CampaignId;
+    }
+
+    if (!event.graph8IntakeWorkflowId && listId) {
+      data.graph8IntakeWorkflowId = await buildIntakeWorkflow({
+        eventName: event.name,
+        eventGoal: event.goal ?? '',
+        targetProfile: event.targetProfile ?? '',
+        listId,
+        scoreSkillId: extractSkillId,
+      });
+    }
+
+    await db().event.update({ where: { id: event.id }, data });
+    console.log('[event] graph8 provisioned for existing event', { eventId, ...data });
+  } catch (error) {
+    console.error(`[event] ${eventId}: graph8 provisioning failed`, error);
+  }
+}
+
 /** Build the per-event intake workflow in graph8. Best-effort: a failure leaves the pointer null. */
 async function buildIntakeWorkflow(input: {
   eventName: string;
@@ -183,10 +238,32 @@ export async function addLeadToEvent(
     throw badRequest('This event has no intake workflow in graph8 yet.');
   }
 
+  return startIntakeLead({
+    event: { id: eventId, graph8IntakeWorkflowId: event.graph8IntakeWorkflowId },
+    workspaceId,
+    lead,
+  });
+}
+
+/**
+ * Shared by the "Add lead" button and Slack captures (`queueCaptureLead`): record the lead as
+ * PROCESSING and start the event's graph8 intake workflow. `notes` (the raw Slack text/transcript)
+ * is appended to the scorer's lead text; `captureId` links a Slack-sourced lead to its capture.
+ */
+export async function startIntakeLead(params: {
+  event: { id: string; graph8IntakeWorkflowId: string };
+  workspaceId: string | null;
+  lead: AddLeadInput;
+  captureId?: string;
+  notes?: string | null;
+}): Promise<AddLeadResult> {
+  const { event, workspaceId, lead, captureId, notes } = params;
+
   const name = [lead.firstName, lead.lastName].filter(Boolean).join(' ') || null;
   const row = await db().lead.create({
     data: {
-      event: { connect: { id: eventId } },
+      event: { connect: { id: event.id } },
+      ...(captureId ? { capture: { connect: { id: captureId } } } : {}),
       workspaceId,
       email: lead.email || null,
       name,
@@ -203,13 +280,18 @@ export async function addLeadToEvent(
     ...(lead.lastName ? { last_name: lead.lastName } : {}),
     ...(lead.companyDomain ? { company_domain: lead.companyDomain } : {}),
     ...(lead.jobTitle ? { job_title: lead.jobTitle } : {}),
-    lead_text: composeLeadText({
-      first_name: lead.firstName,
-      last_name: lead.lastName,
-      job_title: lead.jobTitle,
-      company_domain: lead.companyDomain,
-      email: lead.email,
-    }),
+    lead_text: [
+      composeLeadText({
+        first_name: lead.firstName,
+        last_name: lead.lastName,
+        job_title: lead.jobTitle,
+        company_domain: lead.companyDomain,
+        email: lead.email,
+      }),
+      notes?.trim() ? `Notes: ${notes.trim()}` : null,
+    ]
+      .filter(Boolean)
+      .join(' '),
   };
 
   try {
@@ -298,7 +380,7 @@ export async function launchEvent(
  * Delete an event and everything hanging off it, scoped to the workspace.
  *
  * `Capture` has no `onDelete: Cascade` in the schema (and each capture may own a `ThreadState`),
- * so we tear down children first inside a transaction: thread states -> captures -> event. The
+ * so we tear down children first inside a transaction: leads -> thread states -> captures -> event. The
  * graph8 pointers (persona/list/skills) are left as-is — graph8 owns those records and they are
  * shared/reusable, not deleted here.
  */
@@ -310,6 +392,9 @@ export async function deleteEvent(workspaceId: string, eventId: string): Promise
   if (!event) throw notFound('Event not found');
 
   await db().$transaction(async (tx) => {
+    // Leads reference both the event and (for Slack-sourced ones) a capture — remove them first.
+    await tx.lead.deleteMany({ where: { eventId } });
+
     const captures = await tx.capture.findMany({
       where: { eventId },
       select: { id: true },
