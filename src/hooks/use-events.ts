@@ -7,16 +7,25 @@ import {
   addLead,
   createEvent,
   deleteEvent,
+  createSchedule,
   getEventLeads,
+  getEventSchedule,
+  getEventSequence,
   getWorkspaceEvent,
   getWorkspaceEvents,
   importCaptureLeads,
   launchEvent,
   publishSequence,
+  setEventSchedule,
   setEventSenders,
+  updateSchedule,
   type AddLeadBody,
   type CreateEventBody,
+  type EventScheduleOptions,
+  type EventSequence,
   type PublishSequenceBody,
+  type Schedule,
+  type ScheduleBody,
 } from '@/lib/api/events';
 import type { EventListItem, EventWithCaptures, LeadListItem } from '@/lib/types/capture';
 
@@ -86,6 +95,22 @@ export function useEventLeads(eventId: string, enabled: boolean) {
   });
 }
 
+/**
+ * The event's published sequence (status + steps + per-contact progress). Polls so the Live badge
+ * and per-lead progress stay current. Returns null until a workflow is published.
+ */
+export function useEventSequence(eventId: string) {
+  const { organization, isLoaded } = useOrganization();
+  const workspaceId = organization?.id;
+
+  return useQuery({
+    queryKey: [...eventKeys.detail(workspaceId!, eventId), 'sequence'] as const,
+    queryFn: (): Promise<EventSequence | null> => getEventSequence(workspaceId!, eventId),
+    enabled: isLoaded && !!workspaceId,
+    refetchInterval: 10 * 1000,
+  });
+}
+
 /** Add a lead to an event (runs the graph8 intake workflow), then refresh captures and leads. */
 export function useAddLead(eventId: string) {
   const { organization } = useOrganization();
@@ -120,6 +145,131 @@ export function usePublishSequence(eventId: string) {
       if (!workspaceId) return;
       // Refresh the event so graph8SequenceId (published state) reflects immediately.
       queryClient.invalidateQueries({ queryKey: eventKeys.detail(workspaceId, eventId) });
+    },
+  });
+}
+
+/** The org's sending-window schedules + this event's pick (the Schedule tab). */
+export function useEventSchedule(eventId: string, enabled: boolean) {
+  const { organization, isLoaded } = useOrganization();
+  const workspaceId = organization?.id;
+
+  return useQuery({
+    queryKey: [...eventKeys.detail(workspaceId!, eventId), 'schedule'] as const,
+    queryFn: (): Promise<EventScheduleOptions> => getEventSchedule(workspaceId!, eventId),
+    enabled: isLoaded && !!workspaceId && enabled,
+  });
+}
+
+const DAY_ORDER = [
+  'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+] as const;
+
+/** Convert a per-day sending week (the write shape) to the flat windows array the list uses. */
+function weekToWindows(config: ScheduleBody['config']): Schedule['windows'] {
+  return DAY_ORDER.flatMap((day) => {
+    const window = config[day];
+    return window ? [{ day, start: window.start, end: window.end }] : [];
+  });
+}
+
+/** Create a sending-window schedule in graph8, then refresh the event's schedule options. */
+export function useCreateSchedule(eventId: string) {
+  const { organization } = useOrganization();
+  const workspaceId = organization?.id;
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (body: ScheduleBody) => {
+      if (!workspaceId) throw new Error('No workspace selected');
+      return createSchedule(workspaceId, body);
+    },
+    onSuccess: (data, body) => {
+      if (!workspaceId) return;
+      const key = [...eventKeys.detail(workspaceId, eventId), 'schedule'] as const;
+      // Show the new schedule immediately, before the graph8 list read catches up.
+      queryClient.setQueryData<EventScheduleOptions>(key, (prev) =>
+        prev && !prev.schedules.some((s) => s.id === data.id)
+          ? {
+              ...prev,
+              schedules: [
+                ...prev.schedules,
+                {
+                  id: data.id,
+                  name: body.name,
+                  description: body.description ?? null,
+                  timezone: body.timezone,
+                  windows: weekToWindows(body.config),
+                },
+              ],
+            }
+          : prev,
+      );
+      queryClient.invalidateQueries({ queryKey: key });
+    },
+  });
+}
+
+/** Update a sending-window schedule in graph8, then refresh the event's schedule options. */
+export function useUpdateSchedule(eventId: string) {
+  const { organization } = useOrganization();
+  const workspaceId = organization?.id;
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ scheduleId, body }: { scheduleId: string; body: Partial<ScheduleBody> }) => {
+      if (!workspaceId) throw new Error('No workspace selected');
+      return updateSchedule(workspaceId, scheduleId, body);
+    },
+    onSuccess: (_data, { scheduleId, body }) => {
+      if (!workspaceId) return;
+      const key = [...eventKeys.detail(workspaceId, eventId), 'schedule'] as const;
+      // Reflect the edit immediately, then reconcile with the server.
+      queryClient.setQueryData<EventScheduleOptions>(key, (prev) =>
+        prev
+          ? {
+              ...prev,
+              schedules: prev.schedules.map((s) =>
+                s.id === scheduleId
+                  ? {
+                      ...s,
+                      ...(body.name != null ? { name: body.name } : {}),
+                      ...(body.timezone != null ? { timezone: body.timezone } : {}),
+                      ...(body.description !== undefined ? { description: body.description ?? null } : {}),
+                      ...(body.config != null ? { windows: weekToWindows(body.config) } : {}),
+                    }
+                  : s,
+              ),
+            }
+          : prev,
+      );
+      queryClient.invalidateQueries({ queryKey: key });
+      queryClient.invalidateQueries({
+        queryKey: [...eventKeys.detail(workspaceId, eventId), 'sequence'],
+      });
+    },
+  });
+}
+
+/** Set the event's sending-window schedule (syncs to the graph8 sequencer), then refresh. */
+export function useSetEventSchedule(eventId: string) {
+  const { organization } = useOrganization();
+  const workspaceId = organization?.id;
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (scheduleId: string | null) => {
+      if (!workspaceId) throw new Error('No workspace selected');
+      return setEventSchedule(workspaceId, eventId, scheduleId);
+    },
+    onSuccess: () => {
+      if (!workspaceId) return;
+      queryClient.invalidateQueries({
+        queryKey: [...eventKeys.detail(workspaceId, eventId), 'schedule'],
+      });
+      queryClient.invalidateQueries({
+        queryKey: [...eventKeys.detail(workspaceId, eventId), 'sequence'],
+      });
     },
   });
 }

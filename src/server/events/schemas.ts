@@ -57,3 +57,53 @@ export const setEventSendersSchema = z.object({
 });
 
 export type SetEventSendersInput = z.infer<typeof setEventSendersSchema>;
+
+/** Input for choosing an event's sending-window schedule (the Schedule tab). Null = graph8 default. */
+export const setEventScheduleSchema = z.object({
+  scheduleId: z.string().trim().min(1).max(200).nullable(),
+});
+
+export type SetEventScheduleInput = z.infer<typeof setEventScheduleSchema>;
+
+/** `HH:MM` 24-hour time. */
+const timeString = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:MM (24-hour)');
+
+/** One day's sending window, or null for no sending that day. graph8 rejects start >= end. */
+const dayWindowSchema = z
+  .object({ start: timeString, end: timeString })
+  .refine((w) => w.start < w.end, { message: 'Start must be before end (no overnight windows)' })
+  .nullable();
+
+const sendingWeekSchema = z
+  .object({
+    monday: dayWindowSchema.optional(),
+    tuesday: dayWindowSchema.optional(),
+    wednesday: dayWindowSchema.optional(),
+    thursday: dayWindowSchema.optional(),
+    friday: dayWindowSchema.optional(),
+    saturday: dayWindowSchema.optional(),
+    sunday: dayWindowSchema.optional(),
+  })
+  .refine((week) => Object.values(week).some((w) => w != null), {
+    message: 'Add at least one sending day.',
+  });
+
+/** Create a sending-window schedule in graph8 (the Schedule tab editor). */
+export const createScheduleSchema = z.object({
+  name: z.string().trim().min(1, 'Name is required').max(120),
+  timezone: z.string().trim().min(1).max(64).default('UTC'),
+  description: z.string().trim().max(500).optional(),
+  config: sendingWeekSchema,
+});
+
+export type CreateScheduleInput = z.infer<typeof createScheduleSchema>;
+
+/** Update a sending-window schedule (all fields optional). */
+export const updateScheduleSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  timezone: z.string().trim().min(1).max(64).optional(),
+  description: z.string().trim().max(500).optional(),
+  config: sendingWeekSchema.optional(),
+});
+
+export type UpdateScheduleInput = z.infer<typeof updateScheduleSchema>;

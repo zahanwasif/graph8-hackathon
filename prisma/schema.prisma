@@ -45,6 +45,10 @@ model Event {
   // every connected mailbox at publish time. graph8 owns the mailboxes; these are just pointers.
   graph8SenderMailboxIds String[] @default([])
 
+  // graph8 sending-window schedule id chosen (Schedule tab). Attached to the sequence in graph8;
+  // null = graph8's default window (Mon–Fri 9–5 UTC). graph8 owns the schedule; this is a pointer.
+  graph8ScheduleId String?
+
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

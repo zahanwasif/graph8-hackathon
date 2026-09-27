@@ -6,15 +6,28 @@ import {
   composeLeadText,
   createEventSequence,
   createIntakeWorkflow,
+  createSchedule,
   executeIntakeWorkflow,
+  getSequenceProgress,
   launchCampaign,
   listMailboxes,
+  listSchedules,
   provisionEvent,
   runSequence,
+  setSequenceSchedule,
+  updateSchedule,
   type IntakeLead,
+  type ScheduleSummary,
+  type SequenceProgress,
 } from '@/server/graph8/glue';
 import { badRequest, HttpError, notFound } from '@/server/http';
-import type { AddLeadInput, CreateEventInput, PublishSequenceInput } from '@/server/events/schemas';
+import type {
+  AddLeadInput,
+  CreateEventInput,
+  CreateScheduleInput,
+  PublishSequenceInput,
+  UpdateScheduleInput,
+} from '@/server/events/schemas';
 
 /** Match events for this workspace, plus seeded/unassigned ones. Mirrors `capture/read.ts`. */
 const workspaceScope = (workspaceId: string) => ({ OR: [{ workspaceId }, { workspaceId: null }] });
@@ -328,6 +341,7 @@ export async function publishEventSequence(
       graph8CampaignId: true,
       graph8ListId: true,
       graph8SenderMailboxIds: true,
+      graph8ScheduleId: true,
     },
   });
   if (!event) throw notFound('Event not found');
@@ -355,6 +369,7 @@ export async function publishEventSequence(
     listId: event.graph8ListId,
     finishOnReply: input.finishOnReply,
     steps: input.steps,
+    scheduleId: event.graph8ScheduleId,
     channels: chosen.map((mailbox) => ({
       mailboxId: mailbox.id,
       email: mailbox.email ?? '',
@@ -364,6 +379,91 @@ export async function publishEventSequence(
 
   await db().event.update({ where: { id: event.id }, data: { graph8SequenceId: sequenceId } });
   return { sequenceId };
+}
+
+/**
+ * Read the event's published sequence progress (status + steps + per-contact position) from graph8.
+ * Returns null when nothing has been published yet. Powers the "Live" badge and per-lead progress.
+ */
+export async function getEventSequence(
+  workspaceId: string,
+  eventId: string,
+): Promise<SequenceProgress | null> {
+  const event = await db().event.findFirst({
+    where: { id: eventId, ...workspaceScope(workspaceId) },
+    select: { graph8SequenceId: true },
+  });
+  if (!event) throw notFound('Event not found');
+  if (!event.graph8SequenceId) return null;
+  return getSequenceProgress(event.graph8SequenceId);
+}
+
+/**
+ * The Schedule tab: the org's sending-window schedules plus this event's current pick. graph8 owns
+ * the schedules org-wide; `selectedId` is the one attached to this event's sequence (null = default).
+ */
+export async function getEventScheduleOptions(
+  workspaceId: string,
+  eventId: string,
+): Promise<{ schedules: ScheduleSummary[]; selectedId: string | null }> {
+  const event = await db().event.findFirst({
+    where: { id: eventId, ...workspaceScope(workspaceId) },
+    select: { graph8ScheduleId: true },
+  });
+  if (!event) throw notFound('Event not found');
+  const schedules = (await listSchedules()).filter((schedule) => !schedule.isArchived);
+  return { schedules, selectedId: event.graph8ScheduleId };
+}
+
+/** Create a sending-window schedule in graph8 (the Schedule tab editor). Admin-only (route-enforced). */
+export async function createOrgSchedule(input: CreateScheduleInput): Promise<{ id: string }> {
+  return createSchedule({
+    name: input.name,
+    timezone: input.timezone,
+    description: input.description,
+    config: input.config,
+  });
+}
+
+/** Update a sending-window schedule in graph8. Admin-only (route-enforced). */
+export async function updateOrgSchedule(
+  scheduleId: string,
+  input: UpdateScheduleInput,
+): Promise<void> {
+  await updateSchedule(scheduleId, input);
+}
+
+/**
+ * Set this event's sending-window schedule (the Schedule tab) and SYNC it to the graph8 sequencer:
+ * store the pick on the event, and if a sequence is already published, PATCH it live so queued
+ * sends release inside the new window. null clears the pick (graph8's default window). Admin-only.
+ */
+export async function setEventSchedule(
+  workspaceId: string,
+  eventId: string,
+  scheduleId: string | null,
+): Promise<{ scheduleId: string | null }> {
+  const event = await db().event.findFirst({
+    where: { id: eventId, ...workspaceScope(workspaceId) },
+    select: { id: true, graph8SequenceId: true },
+  });
+  if (!event) throw notFound('Event not found');
+
+  // Validate against real schedules so a stale id can't silently detach sending at publish.
+  if (scheduleId) {
+    const schedules = await listSchedules();
+    if (!schedules.some((schedule) => schedule.id === scheduleId)) {
+      throw badRequest('That sending schedule no longer exists in graph8.');
+    }
+  }
+
+  await db().event.update({ where: { id: event.id }, data: { graph8ScheduleId: scheduleId } });
+
+  // Sync to the live sequencer right away when a sequence exists and a schedule is chosen.
+  if (event.graph8SequenceId && scheduleId) {
+    await setSequenceSchedule(event.graph8SequenceId, scheduleId);
+  }
+  return { scheduleId };
 }
 
 /**

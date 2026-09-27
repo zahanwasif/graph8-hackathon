@@ -578,6 +578,11 @@ export interface CreateSequenceInput {
    * sequence with EMAIL steps fails with "no email channels configured".
    */
   channels: SequenceChannelInput[];
+  /**
+   * graph8 sending-window schedule id. Attached after creation (create doesn't take it). Null =
+   * graph8's default window. Without a matching open window, sends sit `queued` until one opens.
+   */
+  scheduleId?: string | null;
 }
 
 /** Map a graph8 mailbox provider to a sequence channel type. SMTP/IMAP mailboxes send over SMTP. */
@@ -645,7 +650,141 @@ export async function createEventSequence(
 
   const id = created.id ?? created.data?.id;
   if (id == null) throw new Error('graph8 sequences.create returned no id');
-  return { sequenceId: String(id) };
+  const sequenceId = String(id);
+
+  // schedule_id isn't accepted at create — attach it after (best-effort so a schedule hiccup
+  // never loses the freshly-created sequence; the Schedule tab can re-sync it).
+  if (input.scheduleId) {
+    try {
+      await setSequenceSchedule(sequenceId, input.scheduleId);
+    } catch (error) {
+      console.error('createEventSequence: attaching schedule failed', error);
+    }
+  }
+
+  return { sequenceId };
+}
+
+/**
+ * Attach (or change) a sequence's sending-window schedule in graph8 — the "sync to the sequencer"
+ * step. Applies live: the sequencer releases queued sends inside the new window.
+ */
+export async function setSequenceSchedule(sequenceId: string, scheduleId: string): Promise<void> {
+  await graph8().sequences.update(sequenceId, { schedule_id: scheduleId } as never);
+}
+
+/** A graph8 sending-window schedule (the "when do we send?" picker). */
+export interface ScheduleSummary {
+  id: string;
+  name: string;
+  description: string | null;
+  timezone: string | null;
+  windows: Array<{ day: string; start: string; end: string }>;
+  isArchived: boolean;
+}
+
+/** One day's sending window (`HH:MM`, 24-hour, start < end), or null for no sending that day. */
+export type DayWindow = { start: string; end: string } | null;
+
+/** A week of sending windows, keyed by lowercase day name. Omitted/null days don't send. */
+export interface SendingWeekInput {
+  monday?: DayWindow;
+  tuesday?: DayWindow;
+  wednesday?: DayWindow;
+  thursday?: DayWindow;
+  friday?: DayWindow;
+  saturday?: DayWindow;
+  sunday?: DayWindow;
+}
+
+export interface ScheduleInput {
+  name: string;
+  timezone: string;
+  description?: string | null;
+  config: SendingWeekInput;
+}
+
+/** Create a sending-window schedule in graph8 (POST /schedules). Returns the new id. */
+export async function createSchedule(input: ScheduleInput): Promise<{ id: string }> {
+  const { apiKey, baseUrl } = graph8Rest();
+  const resp = await fetch(`${baseUrl}/api/v1/schedules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      name: input.name,
+      timezone: input.timezone,
+      ...(input.description ? { description: input.description } : {}),
+      config: input.config,
+    }),
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error(`graph8 create schedule failed (${resp.status}): ${text.slice(0, 300)}`);
+  }
+  const json = (await resp.json()) as { id?: string | number; data?: { id?: string | number } };
+  const id = json.id ?? json.data?.id;
+  if (id == null) throw new Error('graph8 create schedule returned no id');
+  return { id: String(id) };
+}
+
+/** Update a sending-window schedule in graph8 (PATCH /schedules/{id}). Only supplied fields change. */
+export async function updateSchedule(
+  scheduleId: string,
+  input: Partial<ScheduleInput>,
+): Promise<void> {
+  const { apiKey, baseUrl } = graph8Rest();
+  const resp = await fetch(`${baseUrl}/api/v1/schedules/${scheduleId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      ...(input.name != null ? { name: input.name } : {}),
+      ...(input.timezone != null ? { timezone: input.timezone } : {}),
+      ...(input.description != null ? { description: input.description } : {}),
+      ...(input.config != null ? { config: input.config } : {}),
+    }),
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error(`graph8 update schedule failed (${resp.status}): ${text.slice(0, 300)}`);
+  }
+}
+
+/** List the org's sending-window schedules (GET /schedules). Read-only. */
+export async function listSchedules(): Promise<ScheduleSummary[]> {
+  const { apiKey, baseUrl } = graph8Rest();
+  const resp = await fetch(`${baseUrl}/api/v1/schedules`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error(`graph8 list schedules failed (${resp.status}): ${text.slice(0, 200)}`);
+  }
+  // graph8 returns { data: [ ...schedules ] } (data IS the array); tolerate the other envelopes too.
+  const json = (await resp.json()) as
+    | Array<Record<string, unknown>>
+    | {
+        schedules?: Array<Record<string, unknown>>;
+        data?: Array<Record<string, unknown>> | { schedules?: Array<Record<string, unknown>> };
+      };
+  const rows: Array<Record<string, unknown>> = Array.isArray(json)
+    ? json
+    : Array.isArray(json.data)
+      ? json.data
+      : (json.schedules ?? (json.data && !Array.isArray(json.data) ? json.data.schedules : undefined) ?? []);
+  return rows.map((row) => ({
+    id: String(row.id ?? ''),
+    name: String(row.name ?? 'Schedule'),
+    description: (row.description as string | null) ?? null,
+    timezone: (row.timezone as string | null) ?? null,
+    windows: Array.isArray(row.windows)
+      ? (row.windows as Array<Record<string, unknown>>).map((w) => ({
+          day: String(w.day ?? ''),
+          start: String(w.start ?? ''),
+          end: String(w.end ?? ''),
+        }))
+      : [],
+    isArchived: Boolean(row.is_archived),
+  }));
 }
 
 /**
@@ -743,4 +882,92 @@ export async function createMailbox(input: ConnectMailboxInput): Promise<{ id: s
 /** Disconnect (delete) a sending mailbox in graph8. Mailbox ids are numeric; we store them as strings. */
 export async function deleteMailbox(mailboxId: string): Promise<void> {
   await graph8().mailboxes.delete(Number(mailboxId));
+}
+
+/** One step of a sequence, as the Leads/Workflow progress views show it. */
+export interface SequenceStepView {
+  order: number;
+  /** 'email' | 'call' | 'sms' | 'other' — normalized from graph8's step_type. */
+  type: 'email' | 'call' | 'sms' | 'other';
+  title: string;
+  /** Days to wait before this step (graph8 stores it as seconds). */
+  waitDays: number;
+}
+
+/** Where one enrolled contact currently stands in the sequence. */
+export interface SequenceContactState {
+  contactId: string;
+  /** graph8 state: queued | active | sent | replied | bounced | finished | … */
+  state: string;
+  currentStepOrder: number;
+}
+
+export interface SequenceProgress {
+  sequenceId: string;
+  /** drafted | live | paused | … */
+  status: string;
+  steps: SequenceStepView[];
+  contacts: SequenceContactState[];
+}
+
+/** graph8 step_type → the normalized type the UI renders (mirrors the workflow builder's kinds). */
+function normalizeStepType(stepType?: string | null): SequenceStepView['type'] {
+  switch ((stepType ?? '').toUpperCase()) {
+    case 'EMAIL':
+      return 'email';
+    case 'PHONE':
+    case 'MANUAL_DIALER':
+      return 'call';
+    case 'SMS':
+    case 'WHATSAPP':
+      return 'sms';
+    default:
+      return 'other';
+  }
+}
+
+/**
+ * Read a sequence's live progress: its status, its steps, and where each enrolled contact stands.
+ * Powers the "Live" event badge and the per-lead progress view. Read-only.
+ */
+export async function getSequenceProgress(sequenceId: string): Promise<SequenceProgress> {
+  const g8 = graph8();
+  const [preview, contactsRaw] = await Promise.all([
+    g8.sequences.preview(sequenceId) as unknown as Promise<{
+      status?: string;
+      steps?: Array<{
+        step_order?: number;
+        step_type?: string;
+        time_interval?: number | null;
+        step_data?: { subject?: string; instructions?: string; message_body?: string } | null;
+      }>;
+    }>,
+    g8.sequences.contacts(sequenceId) as unknown as Promise<{
+      data?: Array<{ contact_id?: string | number; state?: string; current_step_order?: number }>;
+    }>,
+  ]);
+
+  const steps: SequenceStepView[] = (preview.steps ?? []).map((step) => {
+    const type = normalizeStepType(step.step_type);
+    const data = step.step_data ?? {};
+    const title =
+      data.subject?.trim() ||
+      data.instructions?.trim() ||
+      data.message_body?.trim() ||
+      { email: 'Send email', call: 'Call lead', sms: 'Send SMS', other: 'Step' }[type];
+    return {
+      order: step.step_order ?? 0,
+      type,
+      title,
+      waitDays: Math.round((step.time_interval ?? 0) / 86_400),
+    };
+  });
+
+  const contacts: SequenceContactState[] = (contactsRaw.data ?? []).map((contact) => ({
+    contactId: String(contact.contact_id ?? ''),
+    state: contact.state ?? 'unknown',
+    currentStepOrder: contact.current_step_order ?? 1,
+  }));
+
+  return { sequenceId, status: preview.status ?? 'unknown', steps, contacts };
 }

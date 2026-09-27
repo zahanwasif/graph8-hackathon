@@ -61,6 +61,8 @@ export interface LeadListItem {
   error: string | null;
   /** graph8 contact's enriched fields, once the run completes. */
   enriched: EnrichedContact | null;
+  /** graph8 contact id — links the lead to its position in the event's sequence. */
+  contactId: string | null;
   createdAt: string;
 }
 

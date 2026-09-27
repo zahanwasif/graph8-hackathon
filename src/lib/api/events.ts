@@ -131,6 +131,39 @@ export async function publishSequence(
   );
 }
 
+/** One step of the event's sequence, for the progress views. */
+export interface SequenceStepView {
+  order: number;
+  type: 'email' | 'call' | 'sms' | 'other';
+  title: string;
+  waitDays: number;
+}
+
+/** Where one enrolled contact stands in the sequence. */
+export interface SequenceContactState {
+  contactId: string;
+  state: string;
+  currentStepOrder: number;
+}
+
+export interface EventSequence {
+  sequenceId: string;
+  status: string;
+  steps: SequenceStepView[];
+  contacts: SequenceContactState[];
+}
+
+/** The event's published sequence progress, or null if nothing has been published yet. */
+export async function getEventSequence(
+  workspaceId: string,
+  eventId: string,
+): Promise<EventSequence | null> {
+  const { sequence } = await apiFetch<{ sequence: EventSequence | null }>(
+    `/workspaces/${workspaceId}/events/${eventId}/sequence`,
+  );
+  return sequence;
+}
+
 /** Set which connected mailboxes this event's sequence sends from (the Sending tab). Admin-only. */
 export async function setEventSenders(
   workspaceId: string,
@@ -141,4 +174,84 @@ export async function setEventSenders(
     `/workspaces/${workspaceId}/events/${eventId}/senders`,
     { method: 'PUT', body: JSON.stringify({ mailboxIds }) },
   );
+}
+
+/** A graph8 sending-window schedule (the "when do we send?" picker). */
+export interface Schedule {
+  id: string;
+  name: string;
+  description: string | null;
+  timezone: string | null;
+  windows: Array<{ day: string; start: string; end: string }>;
+}
+
+export interface EventScheduleOptions {
+  schedules: Schedule[];
+  selectedId: string | null;
+}
+
+/** The org's sending-window schedules plus this event's current pick (the Schedule tab). */
+export async function getEventSchedule(
+  workspaceId: string,
+  eventId: string,
+): Promise<EventScheduleOptions> {
+  return apiFetch<EventScheduleOptions>(
+    `/workspaces/${workspaceId}/events/${eventId}/schedule`,
+  );
+}
+
+/** Set the event's sending-window schedule and sync it to the graph8 sequencer. Admin-only. */
+export async function setEventSchedule(
+  workspaceId: string,
+  eventId: string,
+  scheduleId: string | null,
+): Promise<{ scheduleId: string | null }> {
+  return apiFetch<{ scheduleId: string | null }>(
+    `/workspaces/${workspaceId}/events/${eventId}/schedule`,
+    { method: 'PUT', body: JSON.stringify({ scheduleId }) },
+  );
+}
+
+/** One day's sending window (HH:MM, 24-hour), or null for no sending that day. */
+export type DayWindow = { start: string; end: string } | null;
+
+/** A week of sending windows, keyed by lowercase day. */
+export interface SendingWeek {
+  monday?: DayWindow;
+  tuesday?: DayWindow;
+  wednesday?: DayWindow;
+  thursday?: DayWindow;
+  friday?: DayWindow;
+  saturday?: DayWindow;
+  sunday?: DayWindow;
+}
+
+export interface ScheduleBody {
+  name: string;
+  timezone: string;
+  description?: string;
+  config: SendingWeek;
+}
+
+/** Create a sending-window schedule in graph8. Admin-only. */
+export async function createSchedule(
+  workspaceId: string,
+  body: ScheduleBody,
+): Promise<{ id: string }> {
+  return apiFetch<{ id: string }>(`/workspaces/${workspaceId}/schedules`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+/** Update a sending-window schedule in graph8. Admin-only. */
+export async function updateSchedule(
+  workspaceId: string,
+  scheduleId: string,
+  body: Partial<ScheduleBody>,
+): Promise<void> {
+  await apiFetch<{ ok: true }>(`/workspaces/${workspaceId}/schedules/${scheduleId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
 }

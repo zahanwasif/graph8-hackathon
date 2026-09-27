@@ -6,7 +6,9 @@ import { useRouter } from 'next/navigation';
 import { useOrganization } from '@clerk/nextjs';
 import {
   ArrowLeft,
+  CalendarClock,
   Download,
+  GitBranch,
   Hash,
   Inbox,
   Loader2,
@@ -24,6 +26,8 @@ import {
 import { CaptureRow, dispositionVariant } from '@/components/captures/capture-row';
 import { WorkflowBuilder } from '@/components/events/workflow-builder';
 import { EventSendersClient } from '@/components/events/event-senders-client';
+import { EventScheduleClient } from '@/components/events/event-schedule-client';
+import { LeadSequenceDialog } from '@/components/events/lead-sequence-dialog';
 import { AddLeadDialog } from '@/components/events/add-lead-dialog';
 import { ConfirmActionDialog } from '@/components/confirm-action-dialog';
 import { Badge } from '@/components/ui/badge';
@@ -36,10 +40,12 @@ import {
   useDeleteEvent,
   useEvent,
   useEventLeads,
+  useEventSequence,
   useImportCaptureLeads,
   useLaunchEvent,
 } from '@/hooks/use-events';
 import { ApiError } from '@/lib/api';
+import type { SequenceContactState } from '@/lib/api/events';
 import type { LeadListItem } from '@/lib/types/capture';
 import { cn } from '@/lib/utils';
 import { isAdminRole } from '@/lib/types/workspace-member';
@@ -50,13 +56,14 @@ function errorMessage(error: unknown): string {
   return 'Something went wrong. Try again.';
 }
 
-type EventTab = 'captures' | 'leads' | 'workflow' | 'sending';
+type EventTab = 'captures' | 'leads' | 'workflow' | 'sending' | 'schedule';
 
 const EVENT_TABS: { id: EventTab; label: string; icon: typeof MessageSquare }[] = [
   { id: 'captures', label: 'Captures', icon: MessageSquare },
   { id: 'leads', label: 'Leads', icon: Users },
   { id: 'workflow', label: 'Workflow', icon: Workflow },
   { id: 'sending', label: 'Sending', icon: Send },
+  { id: 'schedule', label: 'Schedule', icon: CalendarClock },
 ];
 
 /** Every enriched field graph8 returned for the contact, rendered as labelled chips. */
@@ -91,11 +98,23 @@ function EnrichedFields({ enriched }: { enriched: LeadListItem['enriched'] }) {
   );
 }
 
-/** One lead intake run — person + score, with pipeline status (processing / failed). */
-function LeadRow({ lead }: { lead: LeadListItem }) {
+/** One lead intake run — person + score, with pipeline status. Clickable to see sequence progress. */
+function LeadRow({
+  lead,
+  contactState,
+  onSelect,
+}: {
+  lead: LeadListItem;
+  contactState?: SequenceContactState;
+  onSelect: () => void;
+}) {
   const who = [lead.title, lead.company].filter(Boolean).join(' @ ');
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-border p-3 sm:flex-row sm:items-start sm:justify-between">
+    <button
+      type="button"
+      onClick={onSelect}
+      className="flex w-full flex-col gap-2 rounded-lg border border-border p-3 text-left transition-colors hover:border-primary/40 hover:bg-accent/40 focus-visible:outline-2 focus-visible:outline-ring sm:flex-row sm:items-start sm:justify-between"
+    >
       <div className="min-w-0 flex-1 space-y-0.5">
         <div className="flex flex-wrap items-center gap-2">
           <User className="size-4 shrink-0 text-muted-foreground" aria-hidden />
@@ -110,6 +129,12 @@ function LeadRow({ lead }: { lead: LeadListItem }) {
       </div>
 
       <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
+        {contactState ? (
+          <Badge variant="info" className="gap-1">
+            <GitBranch className="size-3" aria-hidden />
+            Step {contactState.currentStepOrder} · {contactState.state}
+          </Badge>
+        ) : null}
         {lead.status === 'COMPLETED' && lead.disposition ? (
           <Badge variant={dispositionVariant(lead.disposition)}>
             {lead.disposition}
@@ -127,7 +152,7 @@ function LeadRow({ lead }: { lead: LeadListItem }) {
           <Badge variant="success">Scored</Badge>
         )}
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -146,6 +171,13 @@ export function EventDetailClient({ eventId }: { eventId: string }) {
   const [launchError, setLaunchError] = useState<string | null>(null);
 
   const [addLeadOpen, setAddLeadOpen] = useState(false);
+
+  const sequenceQuery = useEventSequence(eventId);
+  const sequence = sequenceQuery.data;
+  const isLive = sequence?.status.toLowerCase() === 'live';
+  const contactStateFor = (lead: LeadListItem): SequenceContactState | undefined =>
+    lead.contactId != null ? sequence?.contacts.find((c) => c.contactId === lead.contactId) : undefined;
+  const [selectedLead, setSelectedLead] = useState<LeadListItem | null>(null);
 
   const importMutation = useImportCaptureLeads(eventId);
 
@@ -269,6 +301,20 @@ export function EventDetailClient({ eventId }: { eventId: string }) {
               <Inbox className="size-3" />
               {event.captureCount} capture{event.captureCount === 1 ? '' : 's'}
             </Badge>
+            {isLive ? (
+              <Badge variant="success" className="gap-1.5">
+                <span className="relative flex size-2">
+                  <span className="absolute inline-flex size-full animate-ping rounded-full bg-success-fg opacity-60" />
+                  <span className="relative inline-flex size-2 rounded-full bg-success-fg" />
+                </span>
+                Live
+              </Badge>
+            ) : sequence ? (
+              <Badge variant="secondary" className="gap-1">
+                <GitBranch className="size-3" />
+                Sequence {sequence.status}
+              </Badge>
+            ) : null}
             {!event.isActive ? <Badge variant="secondary">Inactive</Badge> : null}
             {event.workspaceId === null ? <Badge variant="outline">Unassigned</Badge> : null}
           </div>
@@ -342,7 +388,12 @@ export function EventDetailClient({ eventId }: { eventId: string }) {
                 <div className="flex justify-end">{importButton}</div>
                 <div className="space-y-2">
                   {leadsQuery.data!.map((lead) => (
-                    <LeadRow key={lead.id} lead={lead} />
+                    <LeadRow
+                      key={lead.id}
+                      lead={lead}
+                      contactState={contactStateFor(lead)}
+                      onSelect={() => setSelectedLead(lead)}
+                    />
                   ))}
                 </div>
               </div>
@@ -365,6 +416,14 @@ export function EventDetailClient({ eventId }: { eventId: string }) {
               eventId={eventId}
               isAdmin={isAdmin}
               selectedIds={event.senderMailboxIds}
+              hasPublishedSequence={event.graph8SequenceId !== null}
+            />
+          ) : null}
+
+          {tab === 'schedule' ? (
+            <EventScheduleClient
+              eventId={eventId}
+              isAdmin={isAdmin}
               hasPublishedSequence={event.graph8SequenceId !== null}
             />
           ) : null}
@@ -414,6 +473,16 @@ export function EventDetailClient({ eventId }: { eventId: string }) {
       />
 
       <AddLeadDialog eventId={eventId} open={addLeadOpen} onOpenChange={setAddLeadOpen} />
+
+      <LeadSequenceDialog
+        lead={selectedLead}
+        sequence={sequence}
+        isLoading={sequenceQuery.isLoading}
+        open={selectedLead !== null}
+        onOpenChange={(open) => {
+          if (!open) setSelectedLead(null);
+        }}
+      />
     </div>
   );
 }

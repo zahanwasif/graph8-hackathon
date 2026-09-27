@@ -95,6 +95,7 @@ function toLeadItem(lead: Lead): LeadListItem {
     disposition: lead.disposition,
     error: lead.error,
     enriched: (lead.enriched as EnrichedContact | null) ?? null,
+    contactId: lead.graph8ContactId,
     createdAt: lead.createdAt.toISOString(),
   };
 }

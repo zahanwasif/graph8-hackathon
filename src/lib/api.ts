@@ -45,6 +45,9 @@ export function readApiErrorBody(
  */
 export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api${path}`, {
+    // React Query owns freshness; never let the browser HTTP cache serve a stale API read
+    // (e.g. a schedule list that misses a just-created row).
+    cache: 'no-store',
     ...options,
     headers: {
       'Content-Type': 'application/json',
