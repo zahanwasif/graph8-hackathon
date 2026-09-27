@@ -58,6 +58,12 @@ npm run theme:check      # WCAG contrast assertions for the palette
 - Slack requires an **HTTPS** redirect URL registered in the Slack app:
   `<NEXT_PUBLIC_APP_URL>/api/integrations/slack/callback`. Locally, use a tunnel (ngrok) and set
   `NEXT_PUBLIC_APP_URL` to it, or test on a Vercel preview.
+- **Incoming messages (Events API):** Slack POSTs to `/api/integrations/slack/events`
+  (Slack app → Event Subscriptions; bot events `message.channels`, `message.groups`). The route
+  authenticates by `SLACK_SIGNING_SECRET` HMAC over the *raw* body (no Clerk session), answers
+  the `url_verification` challenge, acks retries without reprocessing, and must reply within 3s.
+  `handleMessageEvent` in `src/server/slack/events.ts` maps `team_id` + channel to the workspace
+  and currently just logs. New bot scopes only apply after a workspace reconnects Slack.
 - To add an integration: an entry in `src/lib/integrations/catalog.ts`, a logo in
   `src/components/integrations/logos`, server code in `src/server/<name>/`, a hooks file.
 
