@@ -5,7 +5,11 @@ import type { InputType } from '@prisma/client';
 import { db } from '@/server/db';
 import { rememberSlackUser, transcribeSlackFiles, type TranscribedFile } from '@/server/capture/transcribe';
 import { extractLead, type CaptureExtraction } from '@/server/graph8/extract';
-import { getConnectionRowByTeam, postThreadReply } from '@/server/slack/service';
+import {
+  claimOrphanedChannelEvent,
+  getConnectionRowByTeam,
+  postThreadReply,
+} from '@/server/slack/service';
 import { DEFAULT_CAPTURE_TAGS, matchSpokenTag, matchTextTag } from '@/server/slack/tags';
 import { ensureCriteriaScoreField, setCriteriaScore, upsertContact } from '@/server/graph8/glue';
 import type { SlackEventEnvelope, SlackFile, SlackMessageEvent } from '@/server/slack/events';
@@ -98,9 +102,17 @@ export async function ingestSlackEvent(envelope: SlackEventEnvelope): Promise<vo
   if (existing) return;
 
   // The workspace's Slack install: its capture hashtags, and the bot token to fetch voice files.
-  const connection = mappedEvent.workspaceId
+  let connection = mappedEvent.workspaceId
     ? await db().slackConnection.findUnique({ where: { workspaceId: mappedEvent.workspaceId } })
-    : await getConnectionRowByTeam(teamId);
+    : null;
+  if (!connection) {
+    // The Event's workspace has no Slack install (unassigned, or Slack was reconnected from another
+    // workspace). If the team's current install watches this channel, it owns the Event now.
+    connection = await getConnectionRowByTeam(teamId);
+    if (connection?.channelId === channelId) {
+      await claimOrphanedChannelEvent(connection.workspaceId, channelId);
+    }
+  }
   const tags = connection?.captureTags.length ? connection.captureTags : DEFAULT_CAPTURE_TAGS;
 
   const inputType = classifyInput(event);
