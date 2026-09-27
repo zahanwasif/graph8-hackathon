@@ -124,8 +124,8 @@ export async function publishSequence(
   workspaceId: string,
   eventId: string,
   body: PublishSequenceBody,
-): Promise<{ sequenceId: string }> {
-  return apiFetch<{ sequenceId: string }>(
+): Promise<{ sequenceId: string; pausedSequenceId: string | null }> {
+  return apiFetch<{ sequenceId: string; pausedSequenceId: string | null }>(
     `/workspaces/${workspaceId}/events/${eventId}/sequence`,
     { method: 'POST', body: JSON.stringify(body) },
   );

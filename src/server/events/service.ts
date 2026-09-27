@@ -13,6 +13,7 @@ import {
   launchCampaign,
   listMailboxes,
   listSchedules,
+  pauseSequenceIfSending,
   provisionEvent,
   resolveCompanyDomain,
   runSequence,
@@ -335,15 +336,17 @@ export async function startIntakeLead(params: {
  * event's campaign + audience list. Nothing is sent — drafting only; the confirmed Launch step
  * runs it. Stores the sequence id on the event so Launch runs *this* sequence (see `launchEvent`).
  *
- * Idempotent per publish: graph8 has no sequence-replace API, so re-publishing creates a fresh
- * drafted sequence and repoints the event at it (the previous draft is orphaned, never launched).
+ * graph8 has no sequence-replace API, so re-publishing creates a fresh drafted sequence and
+ * repoints the event at it. The previous sequence is paused first if it can still send — it may
+ * already be launched, and left live it would email the same list alongside the new one. The
+ * pause happens before the create so a failed pause never leaves two sequences able to send.
  */
 export async function publishEventSequence(
   workspaceId: string,
   eventId: string,
   ownerEmail: string,
   input: PublishSequenceInput,
-): Promise<{ sequenceId: string }> {
+): Promise<{ sequenceId: string; pausedSequenceId: string | null }> {
   const event = await db().event.findFirst({
     where: { id: eventId, ...workspaceScope(workspaceId) },
     select: {
@@ -351,6 +354,7 @@ export async function publishEventSequence(
       name: true,
       graph8CampaignId: true,
       graph8ListId: true,
+      graph8SequenceId: true,
       graph8SenderMailboxIds: true,
       graph8ScheduleId: true,
     },
@@ -373,6 +377,21 @@ export async function publishEventSequence(
     );
   }
 
+  let pausedSequenceId: string | null = null;
+  if (event.graph8SequenceId) {
+    try {
+      if (await pauseSequenceIfSending(event.graph8SequenceId)) {
+        pausedSequenceId = event.graph8SequenceId;
+      }
+    } catch (error) {
+      console.error('publishEventSequence: pausing the previous sequence failed', error);
+      throw new HttpError(
+        502,
+        'Couldn’t pause the currently published sequence in graph8, so nothing was republished. Try again.',
+      );
+    }
+  }
+
   const { sequenceId } = await createEventSequence({
     eventName: event.name,
     ownerEmail,
@@ -389,7 +408,7 @@ export async function publishEventSequence(
   });
 
   await db().event.update({ where: { id: event.id }, data: { graph8SequenceId: sequenceId } });
-  return { sequenceId };
+  return { sequenceId, pausedSequenceId };
 }
 
 /**

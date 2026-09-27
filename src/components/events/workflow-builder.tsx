@@ -132,11 +132,12 @@ export function WorkflowBuilder({
       return;
     }
     try {
-      const { sequenceId } = await publishMutation.mutateAsync({ finishOnReply: stopOnReply, steps: sendSteps });
+      const { sequenceId, pausedSequenceId } = await publishMutation.mutateAsync({ finishOnReply: stopOnReply, steps: sendSteps });
       // The published cadence is the record of truth now — keep the local draft in sync with it.
       localStorage.setItem(storageKey, JSON.stringify({ steps, stopOnReply }));
       setSaved(true);
-      toast.add({ title: publishedSequenceId ? 'Sequence updated in graph8' : 'Sequence created in graph8', description: `Drafted as sequence ${sequenceId}. Nothing sends until you launch the event.`, type: 'success' });
+      const paused = pausedSequenceId ? ' The previous live sequence was paused — launch the event to send from this one.' : ' Nothing sends until you launch the event.';
+      toast.add({ title: publishedSequenceId ? 'Sequence updated in graph8' : 'Sequence created in graph8', description: `Drafted as sequence ${sequenceId}.${paused}`, type: 'success' });
     } catch (error) {
       const message = error instanceof ApiError ? error.message : error instanceof Error ? error.message : 'Could not publish to graph8. Try again.';
       toast.add({ title: 'Publish failed', description: message, type: 'error' });

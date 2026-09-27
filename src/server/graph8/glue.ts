@@ -996,6 +996,21 @@ export async function runSequence(sequenceId: string): Promise<void> {
   await graph8().sequences.run(sequenceId);
 }
 
+/** graph8 sequence statuses in which the sequencer can still send (or is about to). */
+const SENDING_STATUSES = new Set(['scheduling', 'live', 'resuming', 'waiting']);
+
+/**
+ * Pause a sequence if it can still send. Returns whether it was paused. Drafted, paused, completed
+ * and terminated sequences are left alone. Throws if graph8 rejects the pause — callers replacing a
+ * sequence must not go on to create another one that sends alongside it.
+ */
+export async function pauseSequenceIfSending(sequenceId: string): Promise<boolean> {
+  const sequence = (await graph8().sequences.get(sequenceId)) as unknown as { status?: string };
+  if (!SENDING_STATUSES.has(sequence.status ?? '')) return false;
+  await graph8().sequences.pause(sequenceId);
+  return true;
+}
+
 /**
  * A connected sending mailbox, trimmed to the fields the UI shows. graph8 is the source of truth;
  * SMTP/IMAP passwords are write-only and never returned, so they never appear here.
