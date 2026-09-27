@@ -210,6 +210,7 @@ export async function getContactSnapshot(contactId: string): Promise<EnrichedCon
   try {
     const c = await graph8().contacts.get(Number(contactId));
     return {
+      email: c.work_email,
       linkedinUrl: c.linkedin_url,
       directPhone: c.direct_phone,
       mobilePhone: c.mobile_phone,
@@ -278,10 +279,97 @@ export interface IntakeLead {
   first_name?: string;
   last_name?: string;
   company_domain?: string;
+  /** Company name as written (e.g. in the Slack note) — kept on the contact alongside the domain. */
+  company_name?: string;
   job_title?: string;
   /** Pre-composed lead description for the scorer — Graph8 only interpolates single `${ref}`s,
    *  so the score node reads `${trigger.lead_text}` rather than a composite template. */
   lead_text?: string;
+}
+
+/**
+ * The intake workflow's enrich step. Without `provider_sequence` graph8 tries no provider at all
+ * (`providers_tried: 0`) and every field comes back empty. All four providers are graph8-funded:
+ * no org keys needed, but each lookup CHARGES graph8 credits per contact. Email finders need the
+ * contact's name + company domain (see `resolveCompanyDomain`).
+ */
+const INTAKE_ENRICH_CONFIG = {
+  fields: ['CONTACT_WORK_EMAIL', 'CONTACT_LINKEDIN_URL', 'CONTACT_MOBILE_PHONE'],
+  provider_sequence: ['graph8', 'prospeo', 'hunter', 'leadmagic'],
+};
+
+const DOMAIN_RE = /^(?:https?:\/\/)?(?:www\.)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)\/?$/i;
+const normalizeCompany = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/**
+ * Company name → website domain, so email finders have something to search. A value that is
+ * already a domain is returned as-is; otherwise graph8's open-data company search is queried by
+ * name and only an exact (normalized) name match with a domain is accepted — no guessing.
+ * Best-effort: null on no match or error.
+ */
+export async function resolveCompanyDomain(company: string | null | undefined): Promise<string | null> {
+  const value = company?.trim();
+  if (!value) return null;
+  const asDomain = DOMAIN_RE.exec(value);
+  if (asDomain) return asDomain[1].toLowerCase();
+
+  try {
+    const { data } = await graph8().search.companies({
+      filters: [{ field: 'name', operator: 'contains', value: [value] }],
+      limit: 10,
+    });
+    const wanted = normalizeCompany(value);
+    const match = data.find((c) => c.domain && c.name && normalizeCompany(c.name) === wanted);
+    return match?.domain?.toLowerCase() ?? null;
+  } catch (error) {
+    console.error('resolveCompanyDomain failed', error);
+    return null;
+  }
+}
+
+/** Workflow ids already brought up to date in this server process — checked once each. */
+const upgradedIntakeWorkflows = new Set<string>();
+
+/**
+ * Bring an existing intake workflow up to the current enrich step (work email + provider
+ * waterfall) and pass the company name to create_contact. Patches only those two nodes in place,
+ * so any other edits made to the workflow in graph8 are kept. Best-effort; never throws.
+ */
+export async function ensureIntakeWorkflowUpToDate(workflowId: string): Promise<void> {
+  if (upgradedIntakeWorkflows.has(workflowId)) return;
+  try {
+    const res = (await graph8().workflows.get(workflowId)) as unknown as {
+      action?: { skill_config?: { nodes?: Array<{ node_type?: string; config?: Record<string, unknown> }> } };
+    };
+    const config = res.action?.skill_config;
+    const nodes = config?.nodes ?? [];
+    const enrich = nodes.find((n) => n.node_type === 'enrich_contact');
+    const create = nodes.find((n) => n.node_type === 'create_contact');
+    const trigger = nodes.find((n) => n.node_type === 'trigger');
+
+    const enrichOk =
+      !enrich ||
+      (Array.isArray(enrich.config?.provider_sequence) &&
+        (enrich.config?.fields as string[] | undefined)?.includes('CONTACT_WORK_EMAIL'));
+    const createOk = !create || create.config?.company_name != null;
+    if (enrichOk && createOk) {
+      upgradedIntakeWorkflows.add(workflowId);
+      return;
+    }
+
+    if (enrich) enrich.config = { ...enrich.config, ...INTAKE_ENRICH_CONFIG };
+    if (create) create.config = { ...create.config, company_name: '${trigger.company_name}' };
+    const formFields = trigger?.config?.form_fields;
+    if (trigger && Array.isArray(formFields) && !formFields.includes('company_name')) {
+      trigger.config = { ...trigger.config, form_fields: [...formFields, 'company_name'] };
+    }
+
+    await graph8().workflows.update(workflowId, { config: config as never });
+    upgradedIntakeWorkflows.add(workflowId);
+    console.log('[graph8] intake workflow upgraded (work email + provider waterfall)', { workflowId });
+  } catch (error) {
+    console.error(`[graph8] intake workflow ${workflowId} upgrade failed`, error);
+  }
 }
 
 /** Compose the single-string lead description the score node scores against. */
@@ -317,7 +405,15 @@ function buildIntakeWorkflowConfig(input: IntakeWorkflowInput): Record<string, u
         name: 'Form submitted',
         config: {
           trigger_type: 'new_form_submitted',
-          form_fields: ['email', 'first_name', 'last_name', 'company_domain', 'job_title', 'lead_text'],
+          form_fields: [
+            'email',
+            'first_name',
+            'last_name',
+            'company_domain',
+            'company_name',
+            'job_title',
+            'lead_text',
+          ],
         },
         position: { x: 0, y: 0 },
         connections: ['create_contact-1'],
@@ -332,6 +428,7 @@ function buildIntakeWorkflowConfig(input: IntakeWorkflowInput): Record<string, u
           last_name: '${trigger.last_name}',
           job_title: '${trigger.job_title}',
           company_domain: '${trigger.company_domain}',
+          company_name: '${trigger.company_name}',
           list_id: listId,
         },
         position: { x: 250, y: 0 },
@@ -343,8 +440,7 @@ function buildIntakeWorkflowConfig(input: IntakeWorkflowInput): Record<string, u
         name: 'Enrich contact',
         config: {
           contact_id: '${create_contact-1.contact_id}',
-          // enrich_contact requires ≥1 field or it fails validation and halts the run.
-          fields: ['CONTACT_LINKEDIN_URL', 'CONTACT_MOBILE_PHONE'],
+          ...INTAKE_ENRICH_CONFIG,
           input_mappings: [
             { target_field: 'contact_id', source_expression: '${create_contact-1.contact_id}' },
           ],

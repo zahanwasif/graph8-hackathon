@@ -73,6 +73,8 @@ async function finalizeLead(lead: Lead): Promise<Lead> {
         fitScore: result.fitScore,
         disposition: result.disposition,
         graph8ContactId: result.contactId ?? lead.graph8ContactId,
+        // The email the enrichment waterfall found, when the lead came in without one.
+        email: lead.email ?? enriched?.email ?? null,
         enriched: enriched ? (enriched as unknown as Prisma.InputJsonValue) : undefined,
         error: null,
       },

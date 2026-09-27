@@ -36,6 +36,8 @@ export interface EventListItem {
 
 /** Enriched contact fields snapshotted from graph8 when the intake run completes. */
 export interface EnrichedContact {
+  /** Work email — found by enrichment, or the one the lead was submitted with. */
+  email?: string | null;
   linkedinUrl?: string | null;
   directPhone?: string | null;
   mobilePhone?: string | null;
