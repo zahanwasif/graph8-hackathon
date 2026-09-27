@@ -136,6 +136,61 @@ export async function createEvent(input: CreateEventInput & { workspaceId: strin
   return { id: event.id, name: event.name };
 }
 
+/**
+ * Fill in whatever graph8 setup an event is missing (skills, persona/list/campaign, intake
+ * workflow) — for events created before `createEvent` provisioned graph8, or whose provisioning
+ * failed. Only null pointers are filled; existing graph8 objects are never recreated. Best-effort:
+ * logs and returns on failure. Non-sending (nothing is launched or enrolled).
+ */
+export async function ensureEventProvisioned(eventId: string): Promise<void> {
+  const event = await db().event.findUnique({ where: { id: eventId } });
+  if (!event || !isGraph8Configured()) return;
+  if (event.graph8ExtractSkillId && event.graph8ListId && event.graph8IntakeWorkflowId) return;
+
+  try {
+    const data: {
+      graph8ExtractSkillId?: string;
+      graph8DraftSkillId?: string | null;
+      graph8PersonaId?: string | null;
+      graph8ListId?: string | null;
+      graph8CampaignId?: string | null;
+      graph8IntakeWorkflowId?: string | null;
+    } = {};
+
+    let extractSkillId = event.graph8ExtractSkillId;
+    if (!extractSkillId) {
+      const skills = await findSharedSkillIds();
+      extractSkillId = skills.extractSkillId;
+      data.graph8ExtractSkillId = skills.extractSkillId;
+      if (!event.graph8DraftSkillId) data.graph8DraftSkillId = skills.draftSkillId;
+    }
+
+    let listId = event.graph8ListId;
+    if (!listId) {
+      const provisioned = await provisionGraph8(event.name, event.goal ?? '', event.targetProfile ?? '');
+      listId = provisioned.graph8ListId;
+      data.graph8ListId = provisioned.graph8ListId;
+      if (!event.graph8PersonaId) data.graph8PersonaId = provisioned.graph8PersonaId;
+      if (!event.graph8CampaignId) data.graph8CampaignId = provisioned.graph8CampaignId;
+    }
+
+    if (!event.graph8IntakeWorkflowId && listId) {
+      data.graph8IntakeWorkflowId = await buildIntakeWorkflow({
+        eventName: event.name,
+        eventGoal: event.goal ?? '',
+        targetProfile: event.targetProfile ?? '',
+        listId,
+        scoreSkillId: extractSkillId,
+      });
+    }
+
+    await db().event.update({ where: { id: event.id }, data });
+    console.log('[event] graph8 provisioned for existing event', { eventId, ...data });
+  } catch (error) {
+    console.error(`[event] ${eventId}: graph8 provisioning failed`, error);
+  }
+}
+
 /** Build the per-event intake workflow in graph8. Best-effort: a failure leaves the pointer null. */
 async function buildIntakeWorkflow(input: {
   eventName: string;

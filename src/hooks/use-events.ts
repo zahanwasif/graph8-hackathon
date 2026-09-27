@@ -10,6 +10,7 @@ import {
   getEventLeads,
   getWorkspaceEvent,
   getWorkspaceEvents,
+  importCaptureLeads,
   launchEvent,
   type AddLeadBody,
   type CreateEventBody,
@@ -92,6 +93,25 @@ export function useAddLead(eventId: string) {
     mutationFn: (body: AddLeadBody) => {
       if (!workspaceId) throw new Error('No workspace selected');
       return addLead(workspaceId, eventId, body);
+    },
+    onSuccess: () => {
+      if (!workspaceId) return;
+      queryClient.invalidateQueries({ queryKey: eventKeys.detail(workspaceId, eventId) });
+      queryClient.invalidateQueries({ queryKey: eventKeys.leads(workspaceId, eventId) });
+    },
+  });
+}
+
+/** Import the event's Slack captures as leads, then refresh the event and its leads. */
+export function useImportCaptureLeads(eventId: string) {
+  const { organization } = useOrganization();
+  const workspaceId = organization?.id;
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => {
+      if (!workspaceId) throw new Error('No workspace selected');
+      return importCaptureLeads(workspaceId, eventId);
     },
     onSuccess: () => {
       if (!workspaceId) return;

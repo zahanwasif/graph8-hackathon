@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { useOrganization } from '@clerk/nextjs';
 import {
   ArrowLeft,
+  Download,
   Hash,
   Inbox,
   Loader2,
@@ -28,7 +29,13 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { PageHeader } from '@/components/ui/page-header';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from '@/components/ui/toast';
-import { useDeleteEvent, useEvent, useEventLeads, useLaunchEvent } from '@/hooks/use-events';
+import {
+  useDeleteEvent,
+  useEvent,
+  useEventLeads,
+  useImportCaptureLeads,
+  useLaunchEvent,
+} from '@/hooks/use-events';
 import { ApiError } from '@/lib/api';
 import type { LeadListItem } from '@/lib/types/capture';
 import { cn } from '@/lib/utils';
@@ -135,6 +142,32 @@ export function EventDetailClient({ eventId }: { eventId: string }) {
   const [launchError, setLaunchError] = useState<string | null>(null);
 
   const [addLeadOpen, setAddLeadOpen] = useState(false);
+
+  const importMutation = useImportCaptureLeads(eventId);
+
+  async function handleImport() {
+    try {
+      const { queued, failed, skipped } = await importMutation.mutateAsync();
+      const details = [
+        failed ? `${failed} failed` : null,
+        skipped ? `${skipped} skipped (no name, email or company)` : null,
+      ].filter(Boolean);
+      toast.add({
+        title: queued ? `${queued} capture${queued === 1 ? '' : 's'} sent to the lead pipeline` : 'No new captures to import',
+        description: details.length ? details.join(' · ') : undefined,
+        type: failed ? 'warning' : 'success',
+      });
+    } catch (err) {
+      toast.add({ title: "Couldn't import captures", description: errorMessage(err), type: 'error' });
+    }
+  }
+
+  const importButton = (
+    <Button variant="outline" onClick={handleImport} disabled={importMutation.isPending}>
+      {importMutation.isPending ? <Loader2 className="animate-spin" /> : <Download />}
+      {importMutation.isPending ? 'Importing…' : 'Import Slack captures'}
+    </Button>
+  );
 
   const [tab, setTab] = useState<EventTab>('captures');
   const leadsQuery = useEventLeads(eventId, tab === 'leads');
@@ -289,19 +322,25 @@ export function EventDetailClient({ eventId }: { eventId: string }) {
               <EmptyState
                 icon={<Users />}
                 title="No leads yet"
-                description="Add a lead, or connect this event's graph8 form. Scored contacts land in the graph8 list and show here."
+                description="New Slack captures become leads automatically. Import earlier captures, or add a lead by hand."
                 action={
-                  <Button variant="outline" onClick={() => setAddLeadOpen(true)}>
-                    <Plus />
-                    Add lead
-                  </Button>
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {event.captureCount > 0 ? importButton : null}
+                    <Button variant="outline" onClick={() => setAddLeadOpen(true)}>
+                      <Plus />
+                      Add lead
+                    </Button>
+                  </div>
                 }
               />
             ) : (
-              <div className="space-y-2">
-                {leadsQuery.data!.map((lead) => (
-                  <LeadRow key={lead.id} lead={lead} />
-                ))}
+              <div className="space-y-3">
+                <div className="flex justify-end">{importButton}</div>
+                <div className="space-y-2">
+                  {leadsQuery.data!.map((lead) => (
+                    <LeadRow key={lead.id} lead={lead} />
+                  ))}
+                </div>
               </div>
             )
           ) : null}
