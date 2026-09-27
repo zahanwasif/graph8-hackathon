@@ -87,6 +87,10 @@ model Capture {
   personName    String?
   personTitle   String?
   personCompany String?
+  // Contact fields pulled from rawText by Grok (`src/server/capture/contact.ts`)
+  personEmail     String? // work email only; free-mail addresses are dropped
+  personFirstName String?
+  personLastName  String?
   summary       String?
   nextStep      String?
   // Disposition is a free-text label RETURNED BY graph8 (STRONG_FIT / MAYBE / PASS,

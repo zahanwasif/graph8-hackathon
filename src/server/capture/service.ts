@@ -3,6 +3,7 @@ import 'server-only';
 import type { InputType } from '@prisma/client';
 
 import { db } from '@/server/db';
+import { extractContact } from '@/server/capture/contact';
 import { rememberSlackUser, transcribeSlackFiles, type TranscribedFile } from '@/server/capture/transcribe';
 import { extractLead, type CaptureExtraction } from '@/server/graph8/extract';
 import {
@@ -182,9 +183,45 @@ export async function ingestSlackEvent(envelope: SlackEventEnvelope): Promise<vo
   // Acknowledge inside this capture's own thread. Non-fatal if it fails (e.g. bot not in channel).
   await safePost(thread, '⏳ Debriefing…', captureId);
 
+  // Contact fields (email, name, title, company) via Grok — for every capture with text, whether
+  // or not the Event has a graph8 skill. Never throws.
+  await enrichCaptureContact(captureId);
+
   // Extraction runs in the same post-response context. Text, link and (transcribed) voice
   // captures run now; images wait for vision (not yet wired) — see runExtraction.
   await runExtraction(captureId, thread);
+}
+
+/**
+ * Pulls the contact out of the capture's text with Grok and stores it on the capture. Best
+ * effort: a missing key or an xAI error is logged, never fatal to the capture.
+ */
+export async function enrichCaptureContact(captureId: string): Promise<void> {
+  const capture = await db().capture.findUnique({
+    where: { id: captureId },
+    select: { rawText: true },
+  });
+  const text = capture?.rawText?.trim();
+  if (!text) return; // image, or a voice note with no speech
+
+  try {
+    const contact = await extractContact(text);
+    const fullName = [contact.firstName, contact.lastName].filter(Boolean).join(' ') || null;
+    await db().capture.update({
+      where: { id: captureId },
+      data: {
+        personEmail: contact.email,
+        personFirstName: contact.firstName,
+        personLastName: contact.lastName,
+        personTitle: contact.jobTitle,
+        personCompany: contact.company,
+        personName: fullName,
+      },
+    });
+    console.log('[capture] contact extracted', { captureId, ...contact });
+  } catch (error) {
+    console.error(`[capture] contact extraction failed for ${captureId}:`, (error as Error).message);
+  }
 }
 
 /**
@@ -235,15 +272,16 @@ export async function runExtraction(captureId: string, thread: ThreadContext): P
   const fitScore = typeof extraction.fitScore === 'number' ? Math.round(extraction.fitScore) : null;
 
   // Push the lead to graph8 (best-effort) — graph8 is the source of truth for the contact + score.
-  const recorded = await recordLeadInGraph8(event, extraction, fitScore);
+  const recorded = await recordLeadInGraph8(event, extraction, fitScore, capture.personEmail);
 
   await db().capture.update({
     where: { id: captureId },
     data: {
       // Display cache — the graph8 contact + criteria_score field are the source of truth.
-      personName: extraction.person?.fullName ?? null,
-      personTitle: extraction.person?.title ?? null,
-      personCompany: extraction.person?.company ?? null,
+      // graph8's values win; fall back to what Grok found (enrichCaptureContact) when it has none.
+      personName: extraction.person?.fullName ?? capture.personName,
+      personTitle: extraction.person?.title ?? capture.personTitle,
+      personCompany: extraction.person?.company ?? capture.personCompany,
       summary: extraction.summary || null,
       nextStep: extraction.nextStep ?? null,
       disposition: extraction.disposition,
@@ -267,8 +305,10 @@ async function recordLeadInGraph8(
   event: { graph8ListId: string | null },
   extraction: CaptureExtraction,
   fitScore: number | null,
+  /** Work email Grok found in the message, used when graph8's extraction has none. */
+  fallbackEmail: string | null = null,
 ): Promise<{ contactId: string | null; status: 'EXTRACTED' | 'RECORDED' }> {
-  const email = extraction.person?.email ?? null;
+  const email = extraction.person?.email ?? fallbackEmail;
   if (!email) return { contactId: null, status: 'EXTRACTED' };
 
   try {

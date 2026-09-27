@@ -23,7 +23,7 @@ import { avatarColorStyle, initials } from '@/lib/avatar-color';
 import type { CapturedMessage } from '@/lib/types/message';
 import { workspaceMemberErrorMessage } from '@/lib/workspace-members-format';
 
-const COLUMNS = 5;
+const COLUMNS = 6;
 
 /** "3m ago" for today-ish, a date after that. */
 function formatReceived(iso: string): string {
@@ -74,6 +74,29 @@ function Author({ message }: { message: CapturedMessage }) {
         <p className="truncate font-medium">{name}</p>
         <p className="truncate text-xs text-muted-foreground">{message.channelName}</p>
       </div>
+    </div>
+  );
+}
+
+/** Who the message is about, as extracted by Grok. */
+function ContactCell({ message }: { message: CapturedMessage }) {
+  const { email, firstName, lastName, jobTitle, company } = message.contact;
+  const name = [firstName, lastName].filter(Boolean).join(' ');
+  const role = [jobTitle, company].filter(Boolean).join(' @ ');
+
+  if (!name && !role && !email) {
+    return <span className="text-muted-foreground italic">No contact found</span>;
+  }
+
+  return (
+    <div className="min-w-0 max-w-64 space-y-0.5">
+      {name ? <p className="truncate font-medium">{name}</p> : null}
+      {role ? <p className="truncate text-xs text-muted-foreground">{role}</p> : null}
+      {email ? (
+        <a href={`mailto:${email}`} className="block truncate text-xs text-primary hover:underline">
+          {email}
+        </a>
+      ) : null}
     </div>
   );
 }
@@ -156,6 +179,7 @@ export function MessagesClient() {
             <TableRow>
               <TableHead className="px-4">From</TableHead>
               <TableHead className="px-4">Message</TableHead>
+              <TableHead className="px-4">Contact</TableHead>
               <TableHead className="px-4">Type</TableHead>
               <TableHead className="px-4">Tag</TableHead>
               <TableHead className="px-4">Received</TableHead>
@@ -192,6 +216,9 @@ export function MessagesClient() {
                   </TableCell>
                   <TableCell className="px-4 py-3 whitespace-normal">
                     <MessageBody message={message} />
+                  </TableCell>
+                  <TableCell className="px-4 py-3">
+                    <ContactCell message={message} />
                   </TableCell>
                   <TableCell className="px-4 py-3">
                     <TypeBadge message={message} />

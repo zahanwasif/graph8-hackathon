@@ -10,6 +10,10 @@ export interface CaptureListItem {
   personName: string | null;
   personTitle: string | null;
   personCompany: string | null;
+  /** Work email found in the message (Grok). */
+  personEmail: string | null;
+  personFirstName: string | null;
+  personLastName: string | null;
   summary: string | null;
   nextStep: string | null;
   rawText: string | null;
