@@ -21,6 +21,7 @@ import {
 
 import { CaptureRow, dispositionVariant } from '@/components/captures/capture-row';
 import { AddLeadDialog } from '@/components/events/add-lead-dialog';
+import { WorkflowBuilder } from '@/components/events/workflow-builder';
 import { ConfirmActionDialog } from '@/components/confirm-action-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -307,10 +308,10 @@ export function EventDetailClient({ eventId }: { eventId: string }) {
           ) : null}
 
           {tab === 'workflow' ? (
-            <EmptyState
-              icon={<Workflow />}
-              title="Workflow"
-              description="The graph8 intake workflow for this event will show here. Coming soon."
+            <WorkflowBuilder
+              eventId={eventId}
+              isAdmin={isAdmin}
+              hasWorkflow={Boolean(event.graph8IntakeWorkflowId)}
             />
           ) : null}
         </>

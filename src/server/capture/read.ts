@@ -81,6 +81,7 @@ export async function getWorkspaceEvent(
     isActive: event.isActive,
     workspaceId: event.workspaceId,
     graph8CampaignId: event.graph8CampaignId,
+    graph8IntakeWorkflowId: event.graph8IntakeWorkflowId,
     captureCount: event.captures.length,
     captures: event.captures.map(toCaptureItem),
   };

@@ -75,6 +75,8 @@ export interface EventWithCaptures {
   workspaceId: string | null;
   /** Present once graph8 provisioning succeeded; gates the "Launch event" action. */
   graph8CampaignId: string | null;
+  /** Present once the intake workflow was built; gates the Workflow builder. */
+  graph8IntakeWorkflowId: string | null;
   captureCount: number;
   captures: CaptureListItem[];
 }
