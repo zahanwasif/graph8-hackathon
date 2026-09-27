@@ -36,6 +36,18 @@ export async function setSlackChannel(
   return connection;
 }
 
+/** Replaces the capture hashtags. Tags may include a leading `#`; the API normalises them. */
+export async function setSlackCaptureTags(
+  workspaceId: string,
+  tags: string[],
+): Promise<SlackConnection> {
+  const { connection } = await apiFetch<{ connection: SlackConnection }>(
+    slackPath(workspaceId, '/tags'),
+    { method: 'PUT', body: JSON.stringify({ tags }) },
+  );
+  return connection;
+}
+
 export function sendSlackTestMessage(workspaceId: string): Promise<void> {
   return apiFetch<void>(slackPath(workspaceId, '/test'), { method: 'POST' });
 }

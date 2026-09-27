@@ -62,8 +62,17 @@ npm run theme:check      # WCAG contrast assertions for the palette
   (Slack app → Event Subscriptions; bot events `message.channels`, `message.groups`). The route
   authenticates by `SLACK_SIGNING_SECRET` HMAC over the *raw* body (no Clerk session), answers
   the `url_verification` challenge, acks retries without reprocessing, and must reply within 3s.
-  `handleMessageEvent` in `src/server/slack/events.ts` maps `team_id` + channel to the workspace
-  and currently just logs. New bot scopes only apply after a workspace reconnects Slack.
+  The work runs in `after()` (download + transcription outlive Slack's 3s), `maxDuration = 300`.
+- **Capture rules** (`handleMessageEvent`, `src/server/slack/events.ts`): only the workspace's
+  connected channel; only messages carrying one of `SlackConnection.captureTags` (default
+  `add-contact`; matching in `src/server/slack/tags.ts`). Text needs `#tag` written. Voice/video
+  files are downloaded with the bot token and transcribed by Deepgram
+  (`src/server/transcription/deepgram.ts`, one string per file); they match on the caption *or*
+  the spoken tag ("hashtag add contact"). Matches become a `Capture` (one per Slack thread; later
+  tagged messages in the thread append) under an `Event` per channel, which carries `workspaceId`.
+  Shown at `/messages` (`GET /api/workspaces/[id]/messages`). Admins edit tags in the Slack
+  settings panel (`PUT .../integrations/slack/tags`).
+- New bot scopes only apply after a workspace reconnects Slack.
 - To add an integration: an entry in `src/lib/integrations/catalog.ts`, a logo in
   `src/components/integrations/logos`, server code in `src/server/<name>/`, a hooks file.
 
@@ -90,5 +99,5 @@ npm run theme:check      # WCAG contrast assertions for the palette
 
 See `.env.example`. Required: Clerk keys (with **Organizations enabled** in the Clerk dashboard),
 `DATABASE_URL` (pooled) + `DIRECT_URL` (unpooled, for migrations), `SLACK_CLIENT_ID`,
-`SLACK_CLIENT_SECRET`, `CREDENTIALS_ENCRYPTION_KEY` (`openssl rand -base64 32`),
+`SLACK_CLIENT_SECRET`, `SLACK_SIGNING_SECRET`, `DEEPGRAM_API_KEY`, `CREDENTIALS_ENCRYPTION_KEY` (`openssl rand -base64 32`),
 `NEXT_PUBLIC_APP_URL`. The same variables must be set in Vercel.

@@ -8,6 +8,8 @@ export interface SlackConnection {
   /** The channel the workspace posts to; null until someone picks one. */
   channelId: string | null;
   channelName: string | null;
+  /** Hashtags (lowercase, no `#`) that mark a message in the channel for capture. */
+  captureTags: string[];
   connectedByUserId: string;
   createdAt: string;
   updatedAt: string;

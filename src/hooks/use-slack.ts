@@ -9,6 +9,7 @@ import {
   getSlackConnection,
   listSlackChannels,
   sendSlackTestMessage,
+  setSlackCaptureTags,
   setSlackChannel,
 } from '@/lib/integrations/slack';
 import type { SlackChannel, SlackConnection } from '@/lib/types/slack';
@@ -80,6 +81,22 @@ export function useSetSlackChannel() {
       queryClient.setQueryData(slackKeys.connection(workspaceId), connection);
       // Selecting a public channel joins it, which flips its `isMember`.
       queryClient.invalidateQueries({ queryKey: slackKeys.channels(workspaceId) });
+    },
+  });
+}
+
+export function useSetSlackCaptureTags() {
+  const { organization } = useOrganization();
+  const workspaceId = organization?.id;
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (tags: string[]): Promise<SlackConnection> => {
+      if (!workspaceId) throw new Error('No workspace selected');
+      return setSlackCaptureTags(workspaceId, tags);
+    },
+    onSuccess: (connection) => {
+      if (workspaceId) queryClient.setQueryData(slackKeys.connection(workspaceId), connection);
     },
   });
 }

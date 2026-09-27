@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Hash, Lock, Send } from 'lucide-react';
 
+import { CaptureTagsEditor } from '@/components/integrations/capture-tags-editor';
 import { Button } from '@/components/ui/button';
 import {
   Select,
@@ -130,6 +131,10 @@ export function SlackManageSheet({
               {error ?? workspaceMemberErrorMessage(channelsError)}
             </div>
           )}
+
+          {connection ? (
+            <CaptureTagsEditor tags={connection.captureTags} isAdmin={isAdmin} />
+          ) : null}
 
           <div className="space-y-1.5">
             <p className="text-sm font-medium">Test the connection</p>

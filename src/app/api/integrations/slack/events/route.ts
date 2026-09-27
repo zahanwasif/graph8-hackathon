@@ -1,4 +1,4 @@
-import { NextResponse, type NextRequest } from 'next/server';
+import { after, NextResponse, type NextRequest } from 'next/server';
 
 import {
   handleMessageEvent,
@@ -12,8 +12,12 @@ import {
  * `<NEXT_PUBLIC_APP_URL>/api/integrations/slack/events`.
  *
  * Called by Slack, not a signed-in user, so there is no Clerk session: the Slack signature is
- * the authentication. Slack expects a 2xx within 3 seconds or it retries.
+ * the authentication. Slack expects a 2xx within 3 seconds or it retries — so the work
+ * (downloading and transcribing voice notes can take a while) runs in `after()`, once the 200
+ * has gone out.
  */
+export const maxDuration = 300;
+
 export async function POST(request: NextRequest) {
   const rawBody = await request.text();
 
@@ -48,12 +52,16 @@ export async function POST(request: NextRequest) {
   }
 
   if (payload.type === 'event_callback' && payload.event.type === 'message') {
-    try {
-      await handleMessageEvent(payload.team_id, payload.event as SlackMessageEvent);
-    } catch (error) {
-      // Still 200: a retry won't fix a bug on our side, it would just repeat it.
-      console.error('[slack] failed to handle message event', payload.event_id, error);
-    }
+    const { team_id: teamId, event_id: eventId } = payload;
+    const event = payload.event as SlackMessageEvent;
+    after(async () => {
+      try {
+        await handleMessageEvent(teamId, eventId, event);
+      } catch (error) {
+        // Already acked: a retry wouldn't fix a bug on our side, it would just repeat it.
+        console.error('[slack] failed to handle message event', eventId, error);
+      }
+    });
   }
 
   return new Response(null, { status: 200 });

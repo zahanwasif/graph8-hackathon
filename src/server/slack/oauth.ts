@@ -14,6 +14,8 @@ export const SLACK_AUTHORIZE_URL = 'https://slack.com/oauth/v2/authorize';
  * - `channels:join`: join the chosen public channel so it shows up as a member there.
  * - `channels:history` / `groups:history`: receive `message.channels` / `message.groups` events
  *   for channels the bot is in (see `src/server/slack/events.ts`).
+ * - `files:read`: download voice/video notes to transcribe them.
+ * - `users:read`: show who posted a captured message.
  *
  * Adding a scope here only affects new installs — existing workspaces must reconnect to grant it.
  */
@@ -25,6 +27,8 @@ export const SLACK_BOT_SCOPES = [
   'channels:join',
   'channels:history',
   'groups:history',
+  'files:read',
+  'users:read',
 ] as const;
 
 /** How long an install link stays valid. Long enough to read Slack's consent screen. */

@@ -26,6 +26,7 @@ function toConnection(row: SlackConnectionRow): SlackConnection {
     grantedScopes: row.grantedScopes,
     channelId: row.channelId,
     channelName: row.channelName,
+    captureTags: row.captureTags,
     connectedByUserId: row.connectedByUserId,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -53,7 +54,8 @@ async function getRow(workspaceId: string): Promise<SlackConnectionRow> {
   return row;
 }
 
-function clientFor(row: SlackConnectionRow): WebClient {
+/** A Slack Web API client authenticated as the workspace's bot. */
+export function clientFor(row: Pick<SlackConnectionRow, 'accessToken'>): WebClient {
   return new WebClient(decryptSecret(row.accessToken, key()));
 }
 
@@ -168,6 +170,16 @@ export async function setChannel(workspaceId: string, channelId: string): Promis
   const updated = await db().slackConnection.update({
     where: { workspaceId },
     data: { channelId, channelName },
+  });
+  return toConnection(updated);
+}
+
+/** Replaces the hashtags that mark a Slack message for capture. Tags arrive normalised. */
+export async function setCaptureTags(workspaceId: string, tags: string[]): Promise<SlackConnection> {
+  await getRow(workspaceId);
+  const updated = await db().slackConnection.update({
+    where: { workspaceId },
+    data: { captureTags: tags },
   });
   return toConnection(updated);
 }

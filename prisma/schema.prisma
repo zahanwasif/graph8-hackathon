@@ -16,6 +16,8 @@ model Event {
   date           DateTime?
   goal           String? // human one-liner, e.g. "Find the best SWE lead for graph8"
   slackChannelId String    @unique
+  /// Clerk org id of the workspace whose Slack connection feeds this channel.
+  workspaceId    String?   @map("workspace_id")
 
   // Cached copy of the target-profile text fed to the extract skill as
   // {target_profile}. Mirrors the graph8 Persona/ICP so captures don't need a
@@ -36,6 +38,8 @@ model Event {
   updatedAt DateTime @updatedAt
 
   captures Capture[]
+
+  @@index([workspaceId])
 }
 
 /// One captured conversation = one Slack thread. graph8 holds the CRM truth;
@@ -51,6 +55,13 @@ model Capture {
 
   inputType  InputType
   rawText    String? // transcript or text
+  caption    String? // typed text posted alongside a voice/video note
+  matchedTag String? // capture hashtag that triggered this capture, without '#'
+
+  // Voice/video note source (Slack file), transcribed with Deepgram into rawText
+  slackFileId      String?
+  mediaMimeType    String?
+  mediaDurationSec Float?
   extraction Json? // structured output from the graph8 extract skill
 
   status CaptureStatus @default(RECEIVED)
@@ -118,6 +129,8 @@ model SlackConnection {
   grantedScopes     String[] @map("granted_scopes")
   channelId         String?  @map("channel_id")
   channelName       String?  @map("channel_name")
+  /// Hashtags (lowercase, no '#') that mark a message for capture, e.g. `add-contact`.
+  captureTags       String[] @default(["add-contact"]) @map("capture_tags")
   connectedByUserId String   @map("connected_by_user_id")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @default(now()) @updatedAt @map("updated_at")
