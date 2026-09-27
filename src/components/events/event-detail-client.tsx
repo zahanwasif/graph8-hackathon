@@ -5,11 +5,16 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useOrganization } from '@clerk/nextjs';
 import {
+  AlertTriangle,
   ArrowLeft,
   Download,
   Hash,
   Inbox,
   Loader2,
+  Mail,
+  MailCheck,
+  MailQuestion,
+  MailX,
   MessageSquare,
   Plus,
   Rocket,
@@ -40,7 +45,7 @@ import {
   useLaunchEvent,
 } from '@/hooks/use-events';
 import { ApiError } from '@/lib/api';
-import type { LeadListItem } from '@/lib/types/capture';
+import type { EnrichmentStatus, LeadListItem } from '@/lib/types/capture';
 import { cn } from '@/lib/utils';
 import { isAdminRole } from '@/lib/types/workspace-member';
 
@@ -91,6 +96,31 @@ function EnrichedFields({ enriched }: { enriched: LeadListItem['enriched'] }) {
   );
 }
 
+const ENRICHMENT_BADGE: Record<
+  EnrichmentStatus,
+  { label: string; variant: 'success' | 'warning' | 'info' | 'danger' | 'neutral'; icon: typeof Mail }
+> = {
+  running: { label: 'Finding email', variant: 'info', icon: Loader2 },
+  found: { label: 'Email found', variant: 'success', icon: MailCheck },
+  not_found: { label: 'No email found', variant: 'neutral', icon: MailX },
+  skipped: { label: 'Not enriched', variant: 'warning', icon: MailQuestion },
+  failed: { label: 'Enrichment failed', variant: 'danger', icon: AlertTriangle },
+};
+
+/** Where the lead's email lookup stands. Pending until the intake run completes. */
+function EnrichmentBadge({ lead }: { lead: LeadListItem }) {
+  if (lead.status === 'FAILED') return null;
+  const status: EnrichmentStatus =
+    lead.status === 'PROCESSING' ? 'running' : (lead.enriched?.enrichment?.status ?? 'running');
+  const { label, variant, icon: Icon } = ENRICHMENT_BADGE[status];
+  return (
+    <Badge variant={variant} className="gap-1" title={lead.enriched?.enrichment?.reason ?? undefined}>
+      <Icon className={cn('size-3', status === 'running' && 'animate-spin')} aria-hidden />
+      {label}
+    </Badge>
+  );
+}
+
 /** One lead intake run — person + score, with pipeline status (processing / failed). */
 function LeadRow({ lead }: { lead: LeadListItem }) {
   const who = [lead.title, lead.company].filter(Boolean).join(' @ ');
@@ -106,10 +136,14 @@ function LeadRow({ lead }: { lead: LeadListItem }) {
         {lead.status === 'FAILED' && lead.error ? (
           <p className="line-clamp-2 text-sm text-destructive">{lead.error}</p>
         ) : null}
+        {!lead.email && lead.enriched?.enrichment?.reason ? (
+          <p className="text-xs text-muted-foreground">{lead.enriched.enrichment.reason}</p>
+        ) : null}
         <EnrichedFields enriched={lead.enriched} />
       </div>
 
       <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
+        <EnrichmentBadge lead={lead} />
         {lead.status === 'COMPLETED' && lead.disposition ? (
           <Badge variant={dispositionVariant(lead.disposition)}>
             {lead.disposition}
