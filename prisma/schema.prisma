@@ -16,8 +16,11 @@ model Event {
   date           DateTime?
   goal           String? // human one-liner, e.g. "Find the best SWE lead for graph8"
   slackChannelId String    @unique
-  /// Clerk org id of the workspace whose Slack connection feeds this channel.
-  workspaceId    String?   @map("workspace_id")
+
+  // Owning workspace (Clerk org id). Nullable while the only way to make an Event is the seed;
+  // the future `/debrief event` command sets it. Until then the captures API also shows
+  // unassigned (null) events so seeded data is visible.
+  workspaceId String?
 
   // Cached copy of the target-profile text fed to the extract skill as
   // {target_profile}. Mirrors the graph8 Persona/ICP so captures don't need a
@@ -138,7 +141,6 @@ model SlackConnection {
   @@index([teamId])
   @@map("slack_connections")
 }
-
 
 enum InputType {
   VOICE

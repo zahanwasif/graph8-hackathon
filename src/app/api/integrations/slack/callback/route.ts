@@ -15,7 +15,8 @@ import { completeInstall } from '@/server/slack/service';
 export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
   const done = (connected: boolean, reason?: string) => {
-    // Back to the address the user started on — see `appBaseUrl` for why not the request origin.
+    // Back to the configured public URL, not the request origin: behind a tunnel (ngrok) the
+    // origin reads as `https://localhost:3000` — HTTPS to a plain-HTTP server. See `appBaseUrl`.
     const url = new URL('/integrations', appBaseUrl(request.nextUrl.origin));
     url.searchParams.set('connected', connected ? '1' : '0');
     if (reason) url.searchParams.set('reason', reason);

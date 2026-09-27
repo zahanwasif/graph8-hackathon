@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { UserButton } from '@clerk/nextjs';
-import { Blocks, LayoutDashboard, MessagesSquare, Settings } from 'lucide-react';
+import { Blocks, LayoutDashboard, MessagesSquare, Settings, Target } from 'lucide-react';
 
 import {
   Sidebar,
@@ -32,7 +32,11 @@ const navItems = [
   {
     title: 'Messages',
     href: '/messages',
-    icon: MessagesSquare,
+    icon: MessagesSquare,}
+   , {
+    title: 'Events',
+    href: '/events',
+    icon: Target,
   },
   {
     title: 'Integrations',
