@@ -7,33 +7,37 @@ datasource db {
   provider = "postgresql"
 }
 
-/// An event bound to one Slack channel. Holds pointers to the graph8 objects
-/// that define this event's outcome and steps — not the outcome definition
-/// itself, which lives in graph8.
+/// An event: a Slack channel bound to one graph8 campaign, plus the pointers to
+/// the graph8 objects that hold this event's actual content. graph8 is the source
+/// of truth — the campaign owns name/goal/target-persona/audience/cadence; a
+/// studio persona owns the target profile. This row is the thin binding graph8
+/// can't represent (the Slack channel, the per-event skill/workflow pointers, the
+/// Clerk workspace) plus a small display/scorer cache so list views stay fast.
 model Event {
   id             String    @id @default(cuid())
-  name           String
+  name           String // display cache — graph8 campaign is source of truth
   date           DateTime?
-  goal           String? // human one-liner, e.g. "Find the best SWE lead for graph8"
-  slackChannelId String    @unique
+  goal           String? // display cache — mirrors the campaign's goal
+  slackChannelId String    @unique // routing key: a message in this channel → this event. No graph8 home.
 
   // Owning workspace (Clerk org id). Nullable while the only way to make an Event is the seed;
   // the future `/debrief event` command sets it. Until then the captures API also shows
   // unassigned (null) events so seeded data is visible.
   workspaceId String?
 
-  // Cached copy of the target-profile text fed to the extract skill as
-  // {target_profile}. Mirrors the graph8 Persona/ICP so captures don't need a
-  // round-trip; graph8 remains the source of truth.
+  // Scorer-input cache of the target-profile text fed to the extract skill as
+  // {target_profile}. Source of truth is the graph8 persona / campaign target_persona;
+  // cached here so scoring needs no round-trip.
   targetProfile String?
 
-  // --- graph8 pointers (the outcome + steps live in graph8) ---
-  graph8PersonaId      String? // Persona / ICP: the target profile
+  // --- graph8 pointers (the content + steps live in graph8) ---
+  graph8CampaignId     String? // THE backbone: name/goal/target_persona/audience/cadence live here
+  graph8PersonaId      String? // studio persona (target profile / ICP)
   graph8ExtractSkillId String? // LLM skill: transcript -> structured lead + disposition
   graph8DraftSkillId   String? // LLM skill: draft the follow-up
   graph8PipelineId     String? // deal pipeline (stages)
   graph8ListId         String? // audience list for this event
-  graph8SequenceId     String? // warm nurture campaign/sequence
+  graph8SequenceId     String? // cadence sequence (created when the campaign is launched)
   graph8HotWorkflowId  String? // hot-lead workflow (alerts, delay, voice call)
 
   isActive  Boolean  @default(true)
@@ -45,8 +49,13 @@ model Event {
   @@index([workspaceId])
 }
 
-/// One captured conversation = one Slack thread. graph8 holds the CRM truth;
-/// this row is the local audit + dedupe + orchestration record.
+/// One captured conversation = one Slack thread. This is the Slack-ingestion +
+/// orchestration record graph8 can't represent (thread mapping, dedupe, pipeline
+/// status). The lead itself lives in graph8 (a contact + its criteria_score field),
+/// pointed to by `graph8ContactId`. The person/score fields below are a display
+/// cache so the Captures list renders without a graph8 round-trip — necessary
+/// because the graph8 SDK can't read custom-field values back, and email-less
+/// captures never become graph8 contacts at all.
 model Capture {
   id             String @id @default(cuid())
   eventId        String
@@ -69,23 +78,21 @@ model Capture {
 
   status CaptureStatus @default(RECEIVED)
 
-  // Disposition is a free-text label RETURNED BY graph8 (e.g. STRONG_FIT /
-  // MAYBE / PASS, or HOT / WARM / COLD) — its meaning and routing are owned by
-  // the graph8 skill + workflow, so this is intentionally not a local enum.
-  disposition String?
-  fitScore    Int? // 0-100 fit score from the extract skill, when provided
-
-  // graph8 references
+  // --- graph8 pointers (the lead lives in graph8; these are the source of truth) ---
   graph8ContactId   String?
   graph8CompanyId   String?
   graph8ExecutionId String? // skill/workflow execution id, for async polling
-  outcomeRefs       Json? // ids created by the actions: {dealId, taskId, bookingId, ...}
 
-  // Generic outreach (email is one channel; LinkedIn/SMS/etc. also fit)
-  outreachChannel String? // e.g. "email", "linkedin"
-  outreachSubject String?
-  outreachBody    String?
-  outreachSentAt  DateTime?
+  // --- display cache (graph8 contact + criteria_score field are the source of truth) ---
+  personName    String?
+  personTitle   String?
+  personCompany String?
+  summary       String?
+  nextStep      String?
+  // Disposition is a free-text label RETURNED BY graph8 (STRONG_FIT / MAYBE / PASS,
+  // or HOT / WARM / COLD) — owned by the graph8 skill, intentionally not a local enum.
+  disposition   String?
+  fitScore      Int? // 0-100 fit score, mirrored to the graph8 criteria_score field
 
   error     String?
   createdAt DateTime @default(now())

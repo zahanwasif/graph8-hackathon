@@ -111,7 +111,11 @@ async function main() {
   await prisma.capture.upsert({
     where: { slackEventId: 'seed-maya-strong-fit' },
     update: {
-      extraction: MAYA_EXTRACTION,
+      personName: MAYA_EXTRACTION.person.fullName,
+      personTitle: MAYA_EXTRACTION.person.title,
+      personCompany: MAYA_EXTRACTION.person.company,
+      summary: MAYA_EXTRACTION.summary,
+      nextStep: MAYA_EXTRACTION.nextStep,
       disposition: MAYA_EXTRACTION.disposition,
       fitScore: MAYA_EXTRACTION.fitScore,
       status: 'EXTRACTED',
@@ -128,10 +132,15 @@ async function main() {
         'their payments ledger rewrite - heavy distributed systems, Go and Rust. Mentors a team of ' +
         'five. Said she is open to a founding-engineer type role and wants to chat next week. Her ' +
         'email is maya.chen@example.com.',
-      extraction: MAYA_EXTRACTION,
-      status: 'EXTRACTED',
+      // Display cache (graph8 contact + criteria_score field are the source of truth).
+      personName: MAYA_EXTRACTION.person.fullName,
+      personTitle: MAYA_EXTRACTION.person.title,
+      personCompany: MAYA_EXTRACTION.person.company,
+      summary: MAYA_EXTRACTION.summary,
+      nextStep: MAYA_EXTRACTION.nextStep,
       disposition: MAYA_EXTRACTION.disposition,
       fitScore: MAYA_EXTRACTION.fitScore,
+      status: 'EXTRACTED',
       graph8ExecutionId: 'ae081281-487e-49e6-b247-9371afbb51c6',
     },
   });

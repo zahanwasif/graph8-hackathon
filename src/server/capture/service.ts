@@ -1,12 +1,13 @@
 import 'server-only';
 
-import type { InputType, Prisma } from '@prisma/client';
+import type { InputType } from '@prisma/client';
 
 import { db } from '@/server/db';
 import { rememberSlackUser, transcribeSlackFiles, type TranscribedFile } from '@/server/capture/transcribe';
 import { extractLead, type CaptureExtraction } from '@/server/graph8/extract';
 import { getConnectionRowByTeam, postThreadReply } from '@/server/slack/service';
 import { DEFAULT_CAPTURE_TAGS, matchSpokenTag, matchTextTag } from '@/server/slack/tags';
+import { ensureCriteriaScoreField, setCriteriaScore, upsertContact } from '@/server/graph8/glue';
 import type { SlackEventEnvelope, SlackFile, SlackMessageEvent } from '@/server/slack/events';
 
 /** Where a thread reply goes. The Events API is keyed by team, not our workspace. */
@@ -221,18 +222,64 @@ export async function runExtraction(captureId: string, thread: ThreadContext): P
   const extraction = outcome.extraction;
   const fitScore = typeof extraction.fitScore === 'number' ? Math.round(extraction.fitScore) : null;
 
+  // Push the lead to graph8 (best-effort) — graph8 is the source of truth for the contact + score.
+  const recorded = await recordLeadInGraph8(event, extraction, fitScore);
+
   await db().capture.update({
     where: { id: captureId },
     data: {
-      extraction: outcome.json as Prisma.InputJsonValue,
+      // Display cache — the graph8 contact + criteria_score field are the source of truth.
+      personName: extraction.person?.fullName ?? null,
+      personTitle: extraction.person?.title ?? null,
+      personCompany: extraction.person?.company ?? null,
+      summary: extraction.summary || null,
+      nextStep: extraction.nextStep ?? null,
       disposition: extraction.disposition,
       fitScore,
-      status: 'EXTRACTED',
+      graph8ContactId: recorded.contactId,
       graph8ExecutionId: outcome.executionId ?? null,
+      status: recorded.status,
     },
   });
 
   await safePost(thread, formatResultCard(extraction, fitScore), captureId);
+}
+
+/**
+ * Push an extracted lead into graph8 (best-effort): create the contact in the event's
+ * audience list and mirror the fit score to the `criteria_score` field. graph8 is the
+ * source of truth for the contact + score. A lead with no email can't become a graph8
+ * contact, so it stays local-only (status EXTRACTED); a graph8 failure is non-fatal.
+ */
+async function recordLeadInGraph8(
+  event: { graph8ListId: string | null },
+  extraction: CaptureExtraction,
+  fitScore: number | null,
+): Promise<{ contactId: string | null; status: 'EXTRACTED' | 'RECORDED' }> {
+  const email = extraction.person?.email ?? null;
+  if (!email) return { contactId: null, status: 'EXTRACTED' };
+
+  try {
+    const [firstName, ...rest] = (extraction.person?.fullName ?? '').trim().split(/\s+/);
+    const { contactId } = await upsertContact({
+      workEmail: email,
+      firstName: firstName || null,
+      lastName: rest.length ? rest.join(' ') : null,
+      jobTitle: extraction.person?.title ?? null,
+      linkedinUrl: extraction.person?.linkedinUrl ?? null,
+      listId: event.graph8ListId,
+    });
+
+    if (fitScore != null) {
+      const { fieldId } = await ensureCriteriaScoreField();
+      await setCriteriaScore({ fieldId, contactId, score: fitScore });
+    }
+
+    return { contactId, status: 'RECORDED' };
+  } catch (error) {
+    console.error('capture: graph8 lead record failed', error);
+    return { contactId: null, status: 'EXTRACTED' };
+  }
 }
 
 /** A short Block-Kit-free result summary for the thread. */

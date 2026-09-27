@@ -2,6 +2,7 @@ import 'server-only';
 
 import { db } from '@/server/db';
 import { graph8, isGraph8Configured } from '@/server/graph8/client';
+import { provisionEvent } from '@/server/graph8/glue';
 import { badRequest, HttpError, notFound } from '@/server/http';
 import type { CreateEventInput } from '@/server/events/schemas';
 
@@ -11,13 +12,14 @@ const workspaceScope = (workspaceId: string) => ({ OR: [{ workspaceId }, { works
 /**
  * Create a Debrief event and provision it in graph8.
  *
- * graph8 owns the outcome. Defining an event here:
- *   - REUSES the shared, event-agnostic LLM skills (`debrief_extract`, `debrief_draft_followup`)
- *     — they take the event name/goal/target profile as runtime variables, so one pair serves
- *     every event.
- *   - creates a per-event Persona (the target profile) and audience List (best-effort — capture +
- *     extraction only need the extract skill and the stored `targetProfile` text).
- * The resulting graph8 ids are stored as pointers on the Event.
+ * graph8 is the source of truth. An Event is the thin local binding graph8 can't
+ * represent (a Slack channel → a graph8 campaign) plus a small display/scorer cache.
+ * Defining an event here:
+ *   - REUSES the shared, event-agnostic LLM skills (`debrief_extract`, `debrief_draft_followup`) —
+ *     they take the event name/goal/target profile as runtime variables, so one pair serves every event,
+ *   - provisions the graph8 studio Persona + audience List + cadence Campaign (best-effort).
+ * The resulting graph8 ids are stored as pointers on the Event; name/goal/targetProfile are cached
+ * for fast list rendering and as the scorer's `{target_profile}` input.
  */
 
 const EXTRACT_SKILL_NAME = 'debrief_extract';
@@ -48,35 +50,21 @@ async function findSharedSkillIds(): Promise<{ extractSkillId: string; draftSkil
   return { extractSkillId, draftSkillId: idByName(DRAFT_SKILL_NAME) };
 }
 
-/** Create the per-event Persona. Best-effort: a failure leaves the pointer null, not the whole flow. */
-async function createPersona(name: string, goal: string, targetProfile: string): Promise<string | null> {
+/**
+ * Provision the graph8 studio Persona + audience List + cadence Campaign for a new
+ * event. Best-effort: a failure leaves the pointers null rather than aborting the event.
+ */
+async function provisionGraph8(
+  name: string,
+  goal: string,
+  targetProfile: string,
+): Promise<{ graph8PersonaId: string | null; graph8ListId: string | null; graph8CampaignId: string | null }> {
   try {
-    const res = (await graph8().studio.createPersona({
-      title: `${name} — target profile`,
-      website_url: 'https://graph8.com',
-      ...(goal ? { why_target: goal } : {}),
-      ...(targetProfile ? { campaign_approach: targetProfile } : {}),
-      source: 'debrief',
-    })) as unknown as { data?: { id?: string }; id?: string };
-    return res.data?.id ?? res.id ?? null;
+    const { personaId, listId, campaignId } = await provisionEvent({ name, goal, targetProfile });
+    return { graph8PersonaId: personaId, graph8ListId: listId, graph8CampaignId: campaignId };
   } catch (error) {
-    console.error('event bootstrap: persona create failed', error);
-    return null;
-  }
-}
-
-/** Create the per-event audience List. Best-effort. */
-async function createList(name: string): Promise<string | null> {
-  try {
-    const res = (await graph8().lists.create(`Event: ${name}`, 'contacts')) as unknown as {
-      data?: { id?: number | string };
-      id?: number | string;
-    };
-    const raw = res.data?.id ?? res.id ?? null;
-    return raw == null ? null : String(raw);
-  } catch (error) {
-    console.error('event bootstrap: list create failed', error);
-    return null;
+    console.error('event bootstrap: graph8 provision failed', error);
+    return { graph8PersonaId: null, graph8ListId: null, graph8CampaignId: null };
   }
 }
 
@@ -94,22 +82,26 @@ export async function createEvent(input: CreateEventInput & { workspaceId: strin
   }
 
   const { extractSkillId, draftSkillId } = await findSharedSkillIds();
-  const [graph8PersonaId, graph8ListId] = await Promise.all([
-    createPersona(name, goal, targetProfile),
-    createList(name),
-  ]);
+  const { graph8PersonaId, graph8ListId, graph8CampaignId } = await provisionGraph8(
+    name,
+    goal,
+    targetProfile,
+  );
 
   const event = await db().event.create({
     data: {
+      // Display / scorer cache — graph8 campaign + persona are the source of truth.
       name,
       goal: goal || null,
       targetProfile: targetProfile || null,
       workspaceId,
       slackChannelId,
+      // graph8 pointers.
       graph8ExtractSkillId: extractSkillId,
       graph8DraftSkillId: draftSkillId,
       graph8PersonaId,
       graph8ListId,
+      graph8CampaignId,
     },
   });
 

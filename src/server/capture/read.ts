@@ -11,34 +11,27 @@ import type { CaptureListItem, EventListItem, EventWithCaptures } from '@/lib/ty
  * Events are scoped to the workspace. While the only ways to create an Event are the seed and the
  * new-event dialog, events with a null `workspaceId` (the seed) are treated as unassigned and
  * shown too. Drop the null branch once every Event is workspace-bound.
+ *
+ * A capture's person/score fields come straight from the local display cache — the graph8 contact
+ * (`graph8ContactId`) + its criteria_score field remain the source of truth; the cache exists so
+ * the list renders without a graph8 round-trip.
  */
 
 /** Match events for this workspace, plus seeded/unassigned ones. */
 const scope = (workspaceId: string) => ({ OR: [{ workspaceId }, { workspaceId: null }] });
 
-/** Safely dig a string out of the stored extraction JSON. */
-function readString(extraction: unknown, ...path: string[]): string | null {
-  let node: unknown = extraction;
-  for (const key of path) {
-    if (!node || typeof node !== 'object') return null;
-    node = (node as Record<string, unknown>)[key];
-  }
-  return typeof node === 'string' && node.trim() ? node : null;
-}
-
 function toCaptureItem(capture: Capture): CaptureListItem {
-  const ex = capture.extraction;
   return {
     id: capture.id,
     inputType: capture.inputType,
     status: capture.status,
     disposition: capture.disposition,
     fitScore: capture.fitScore,
-    personName: readString(ex, 'person', 'fullName'),
-    personTitle: readString(ex, 'person', 'title'),
-    personCompany: readString(ex, 'person', 'company'),
-    summary: readString(ex, 'summary'),
-    nextStep: readString(ex, 'nextStep'),
+    personName: capture.personName,
+    personTitle: capture.personTitle,
+    personCompany: capture.personCompany,
+    summary: capture.summary,
+    nextStep: capture.nextStep,
     rawText: capture.rawText,
     error: capture.error,
     slackChannelId: capture.slackChannelId,
